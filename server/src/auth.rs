@@ -46,13 +46,13 @@ impl RateLimiter {
 
     pub fn check(&self, key: &str) -> Result<(), u64> {
         let m = self.fails.lock().unwrap();
-        if let Some(&(n, last)) = m.get(key) {
-            if n >= 5 {
-                let wait = (1u64 << (n - 5).min(14)).min(MAX_WAIT);
-                let elapsed = (self.now)().duration_since(last).as_secs();
-                if elapsed < wait {
-                    return Err(wait - elapsed);
-                }
+        if let Some(&(n, last)) = m.get(key)
+            && n >= 5
+        {
+            let wait = (1u64 << (n - 5).min(14)).min(MAX_WAIT);
+            let elapsed = (self.now)().duration_since(last).as_secs();
+            if elapsed < wait {
+                return Err(wait - elapsed);
             }
         }
         Ok(())
@@ -78,7 +78,6 @@ impl RateLimiter {
 pub const COOKIE_MAX_AGE: i64 = 30 * 24 * 3600;
 
 pub fn new_token() -> String {
-    use rand::Rng;
     let b: [u8; 32] = rand::random();
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
