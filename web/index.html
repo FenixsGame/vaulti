@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Vaulti</title>
+<link rel="stylesheet" href="/style.css"></head><body>
+<section id="login" class="card">
+  <h1>Vaulti</h1>
+  <input id="email" type="email" placeholder="email" autocomplete="username">
+  <input id="pw" type="password" placeholder="password" autocomplete="current-password">
+  <button id="blogin">Accedi</button>
+  <button id="breg" hidden>Primo utente (admin)</button>
+  <p id="lerr" class="err"></p>
+</section>
+<main id="main" hidden>
+  <header><span id="quota"></span><span>Sposta in:</span>
+    <select id="mvsel"></select><button id="blogout">Esci</button></header>
+  <nav id="crumbs"></nav>
+  <div class="actions">
+    <button id="bpick">Carica file</button>
+    <button id="bfolder">Nuova cartella</button>
+    <input id="file" type="file" hidden multiple>
+  </div>
+  <table id="listing"><tbody></tbody></table>
+  <p id="prog"></p>
+  <p id="merr" class="err"></p>
+</main>
+<script src="/app.js"></script></body></html>

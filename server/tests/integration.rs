@@ -1041,3 +1041,23 @@ async fn cross_user_file_404_and_deleted_404() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn index_and_assets_served() {
+    let t = boot().await;
+    for uri in ["/", "/app.js", "/style.css"] {
+        let res = t
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!to_bytes(res.into_body()).await.is_empty());
+    }
+}

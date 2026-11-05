@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod handlers_auth;
 pub mod handlers_files;
+pub mod handlers_static;
 pub mod handlers_store;
 
 use axum::Router;
@@ -41,6 +42,7 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     use crate::handlers_auth as a;
     use crate::handlers_files as f;
+    use crate::handlers_static as s;
     use crate::handlers_store as u;
     // limite body SOLO sui chunk; la 413 "attesa" nei test arriva dall'handler
     let chunks = Router::new()
@@ -50,6 +52,9 @@ pub fn build_router(state: AppState) -> Router {
         ));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/", get(s::index))
+        .route("/app.js", get(s::appjs))
+        .route("/style.css", get(s::style))
         .route("/auth/register", post(a::register))
         .route("/auth/login", post(a::login))
         .route("/auth/logout", post(a::logout))
