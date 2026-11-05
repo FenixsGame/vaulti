@@ -181,10 +181,8 @@ pub fn reset_password() {
             eprintln!("utente non trovato: {email}");
             std::process::exit(1);
         }
-        sqlx::query(
-            "DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)",
-        )
-        .bind(&email)
+        sqlx::query("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)")
+            .bind(&email)
         .execute(&pool)
         .await
         .unwrap();
