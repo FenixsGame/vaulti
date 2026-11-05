@@ -1,7 +1,7 @@
 pub mod config;
 pub mod db;
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -34,10 +34,14 @@ pub fn run() {
     rt.block_on(async move {
         std::fs::create_dir_all(format!("{}/storage", cfg.data_dir)).unwrap();
         std::fs::create_dir_all(format!("{}/tmp", cfg.data_dir)).unwrap();
-        let pool = db::new_pool(&format!("{}/vaulti.db", cfg.data_dir)).await.unwrap();
+        let pool = db::new_pool(&format!("{}/vaulti.db", cfg.data_dir))
+            .await
+            .unwrap();
         db::migrate(&pool).await.unwrap();
         let state = AppState::new(pool, cfg.data_dir.clone(), cfg.chunk_size);
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", cfg.port)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", cfg.port))
+            .await
+            .unwrap();
         println!("vaulti sul port {}", cfg.port);
         axum::serve(listener, build_router(state)).await.unwrap();
     });

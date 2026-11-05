@@ -3,6 +3,7 @@ mod common;
 use axum::body::Body;
 use axum::http::Request;
 use common::*;
+use tower::ServiceExt;
 
 #[tokio::test]
 async fn healthz_ok() {
