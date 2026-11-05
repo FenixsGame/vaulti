@@ -380,6 +380,7 @@ async fn chunk_too_long_413() {
         put_chunk(&t, &cookie, &id, 0, b"ab").await,
         StatusCode::NO_CONTENT
     );
+    put_chunk(&t, &cookie, &id, 1, b"cd").await;
     finish_ok(&t, &cookie, &id).await;
 }
 
