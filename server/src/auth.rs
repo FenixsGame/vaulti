@@ -135,7 +135,9 @@ pub fn verify_sync(phc: &str, pw: &str) -> bool {
 }
 
 pub async fn hash(pw: String) -> String {
-    tokio::task::spawn_blocking(move || hash_sync(&pw)).await.unwrap()
+    tokio::task::spawn_blocking(move || hash_sync(&pw))
+        .await
+        .unwrap()
 }
 
 pub async fn verify(phc: String, pw: String) -> bool {

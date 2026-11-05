@@ -32,8 +32,8 @@ impl FromRequestParts<AppState> for SessionUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = auth::session_token_from_cookie(&parts.headers)
-            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let token =
+            auth::session_token_from_cookie(&parts.headers).ok_or(StatusCode::UNAUTHORIZED)?;
         let hash = auth::token_hash(&token);
         let row: Option<(String, i64)> =
             sqlx::query_as("SELECT user_id, expires_at FROM sessions WHERE token_hash = ?")
@@ -43,12 +43,11 @@ impl FromRequestParts<AppState> for SessionUser {
                 .unwrap();
         match row {
             Some((uid, exp)) if exp > now() => {
-                let is_admin: i64 =
-                    sqlx::query_scalar("SELECT is_admin FROM users WHERE id = ?")
-                        .bind(&uid)
-                        .fetch_one(&state.pool)
-                        .await
-                        .unwrap_or(0);
+                let is_admin: i64 = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = ?")
+                    .bind(&uid)
+                    .fetch_one(&state.pool)
+                    .await
+                    .unwrap_or(0);
                 Ok(SessionUser {
                     user_id: uid,
                     is_admin: is_admin != 0,
@@ -206,6 +205,6 @@ pub async fn admin_create(
 }
 
 /* reset-password CLI in main.rs (emergenza locale sul gateway):
-   args SOLO reset-password <email> (la nuova password LETTA DA STDIN, mai argv —
-   resterebbe nella history della shell). spawn_blocking hash + UPDATE users +
-   DELETE FROM sessions WHERE user_id = ?; poi exit. VAULTI_DATA_DIR coerente. */
+args SOLO reset-password <email> (la nuova password LETTA DA STDIN, mai argv —
+resterebbe nella history della shell). spawn_blocking hash + UPDATE users +
+DELETE FROM sessions WHERE user_id = ?; poi exit. VAULTI_DATA_DIR coerente. */

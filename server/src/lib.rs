@@ -79,7 +79,11 @@ async fn origin_guard(req: Request, next: Next) -> Response {
 }
 
 fn origin_bad() -> Response {
-    (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "origin non valido"}))).into_response()
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({"error": "origin non valido"})),
+    )
+        .into_response()
 }
 
 pub fn run() {
