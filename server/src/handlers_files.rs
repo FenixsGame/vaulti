@@ -316,7 +316,7 @@ pub async fn download(
         "{}/storage/{}/{}",
         s.data_dir, user.user_id, stored
     ));
-    let mut resp = svc.oneshot(req).await.unwrap();
+    let mut resp = svc.oneshot(req).await.unwrap().map(axum::body::Body::new);
     // ascii: fallback sicuro per browser senza RFC 5987; pct: RFC 9110 token bytes
     let ascii_name: String = name
         .chars()
