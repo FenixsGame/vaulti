@@ -523,6 +523,7 @@ async fn cancel_upload_cleanup() {
     put_chunk(&t, &cookie, &id, 0, b"ab").await;
     let res = t
         .app
+        .clone()
         .oneshot(authed_req(
             "DELETE",
             &format!("/api/upload/{id}"),
