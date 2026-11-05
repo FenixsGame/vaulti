@@ -106,3 +106,55 @@ pub async fn logged_in(t: &TestApp) -> String {
     register_user(t, "a@b.c", "password123").await;
     login_cookie(t, "a@b.c", "password123").await
 }
+
+pub async fn start_upload(t: &TestApp, cookie: &str, name: &str, size: u64) -> String {
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req(
+            "POST",
+            "/api/upload/start",
+            Some(serde_json::json!({"name": name, "size": size})),
+            cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
+    j["upload_id"].as_str().unwrap().to_string()
+}
+
+pub async fn put_chunk(t: &TestApp, cookie: &str, id: &str, n: u32, data: &[u8]) -> StatusCode {
+    let res = t
+        .app
+        .clone()
+        .oneshot(raw_req(
+            "PUT",
+            &format!("/api/upload/{id}/chunk/{n}"),
+            cookie,
+            data.to_vec(),
+        ))
+        .await
+        .unwrap();
+    res.status()
+}
+
+pub async fn finish_ok(t: &TestApp, cookie: &str, up: &str) -> String {
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req(
+            "POST",
+            &format!("/api/upload/{up}/finish"),
+            None,
+            cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    serde_json::from_slice::<Value>(&to_bytes(res.into_body()).await)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}

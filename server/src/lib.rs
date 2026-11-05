@@ -2,14 +2,18 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod handlers_auth;
+pub mod handlers_store;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
+use axum::routing::delete;
 use axum::routing::get;
 use axum::routing::post;
+use axum::routing::put;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -34,6 +38,13 @@ impl AppState {
 
 pub fn build_router(state: AppState) -> Router {
     use crate::handlers_auth as a;
+    use crate::handlers_store as u;
+    // limite body SOLO sui chunk; la 413 "attesa" nei test arriva dall'handler
+    let chunks = Router::new()
+        .route("/api/upload/{id}/chunk/{n}", put(u::chunk))
+        .layer(DefaultBodyLimit::max(
+            (state.chunk_size + 1024 * 1024) as usize,
+        ));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/auth/register", post(a::register))
@@ -41,6 +52,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/logout", post(a::logout))
         .route("/api/me", get(a::me))
         .route("/api/admin/users", post(a::admin_create))
+        .route("/api/upload/start", post(u::start))
+        .route("/api/upload/{id}/status", get(u::status))
+        .route("/api/upload/{id}/finish", post(u::finish))
+        .route("/api/upload/{id}", delete(u::cancel))
+        .merge(chunks)
         .layer(middleware::from_fn(origin_guard))
         .with_state(state)
 }
