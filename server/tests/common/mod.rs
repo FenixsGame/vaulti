@@ -1,0 +1,108 @@
+#![allow(dead_code)]
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::Value;
+use sqlx::SqlitePool;
+use tower::ServiceExt;
+
+pub struct TestApp {
+    pub app: axum::Router,
+    pub pool: SqlitePool,
+    pub data_dir: tempfile::TempDir,
+}
+
+pub async fn boot() -> TestApp {
+    let data_dir = tempfile::tempdir().unwrap();
+    let pool = vaulti_server::db::new_pool(":memory:").await.unwrap();
+    vaulti_server::db::migrate(&pool).await.unwrap();
+    let state = vaulti_server::AppState::new(
+        pool.clone(),
+        data_dir.path().to_string_lossy().to_string(),
+        2,
+    );
+    TestApp {
+        app: vaulti_server::build_router(state),
+        pool,
+        data_dir,
+    }
+}
+
+pub fn json_req(uri: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", "1.2.3.4")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+pub fn authed_req(method: &str, uri: &str, body: Option<Value>, cookie: &str) -> Request<Body> {
+    let b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("cookie", cookie.to_string())
+        .header("x-forwarded-for", "1.2.3.4");
+    if let Some(v) = body {
+        b.header("content-type", "application/json")
+            .body(Body::from(v.to_string()))
+            .unwrap()
+    } else {
+        b.body(Body::empty()).unwrap()
+    }
+}
+
+pub fn raw_req(method: &str, uri: &str, cookie: &str, body: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("cookie", cookie.to_string())
+        .header("x-forwarded-for", "1.2.3.4")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+pub async fn to_bytes(b: Body) -> Vec<u8> {
+    b.collect().await.unwrap().to_bytes().to_vec()
+}
+
+pub async fn register_user(t: &TestApp, email: &str, pw: &str) {
+    let res = t
+        .app
+        .clone()
+        .oneshot(json_req(
+            "/auth/register",
+            serde_json::json!({"email": email, "password": pw}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+pub async fn login_cookie(t: &TestApp, email: &str, pw: &str) -> String {
+    let res = t
+        .app
+        .clone()
+        .oneshot(json_req(
+            "/auth/login",
+            serde_json::json!({"email": email, "password": pw}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res.headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+pub async fn logged_in(t: &TestApp) -> String {
+    register_user(t, "a@b.c", "password123").await;
+    login_cookie(t, "a@b.c", "password123").await
+}
