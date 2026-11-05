@@ -97,8 +97,7 @@ pub async fn start(
     .execute(&s.pool)
     .await
     .unwrap();
-    Json(serde_json::json!({"upload_id": id, "chunk_size": s.chunk_size}))
-        .into_response()
+    Json(serde_json::json!({"upload_id": id, "chunk_size": s.chunk_size})).into_response()
 }
 
 pub async fn chunk(
@@ -182,12 +181,13 @@ pub async fn status(
     if uploads_row(&s.pool, &id, &user.user_id).await.is_none() {
         return err(StatusCode::NOT_FOUND, "upload sconosciuto");
     }
-    let received: Vec<i32> =
-        sqlx::query_scalar("SELECT chunk_n FROM upload_chunks WHERE upload_id = ? ORDER BY chunk_n")
-            .bind(&id)
-            .fetch_all(&s.pool)
-            .await
-            .unwrap();
+    let received: Vec<i32> = sqlx::query_scalar(
+        "SELECT chunk_n FROM upload_chunks WHERE upload_id = ? ORDER BY chunk_n",
+    )
+    .bind(&id)
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
     Json(serde_json::json!({"received": received})).into_response()
 }
 
@@ -262,8 +262,7 @@ pub async fn finish(
                 .execute(&s.pool)
                 .await
                 .ok();
-            let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir))
-                .await;
+            let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir)).await;
             return err(StatusCode::CONFLICT, "nome già in uso");
         }
         return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
@@ -314,7 +313,6 @@ pub async fn cancel(
         .execute(&s.pool)
         .await
         .unwrap();
-    let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir))
-        .await;
+    let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir)).await;
     StatusCode::OK.into_response()
 }

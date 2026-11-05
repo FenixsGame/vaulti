@@ -152,8 +152,7 @@ pub async fn finish_ok(t: &TestApp, cookie: &str, up: &str) -> String {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    serde_json::from_slice::<Value>(&to_bytes(res.into_body()).await)
-        .unwrap()["id"]
+    serde_json::from_slice::<Value>(&to_bytes(res.into_body()).await).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string()

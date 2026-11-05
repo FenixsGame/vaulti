@@ -293,11 +293,10 @@ async fn upload_finish_chunks_in_order() {
         StatusCode::NO_CONTENT
     );
     finish_ok(&t, &cookie, &id).await;
-    let (uid, stored): (String, String) =
-        sqlx::query_as("SELECT user_id, stored_name FROM files")
-            .fetch_one(&t.pool)
-            .await
-            .unwrap();
+    let (uid, stored): (String, String) = sqlx::query_as("SELECT user_id, stored_name FROM files")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
     let blob = std::fs::read(blob_path(&t, &uid, &stored)).unwrap();
     assert_eq!(blob, b"abcde");
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
@@ -575,11 +574,10 @@ async fn finish_duplicate_name_409() {
     put_chunk(&t, &cookie, &b, 0, b"a").await;
     assert_eq!(finish_status(&t, &cookie, &b).await, StatusCode::CONFLICT);
     // il blob originale resta intatto, un solo file, tmp pulito
-    let (uid, stored): (String, String) =
-        sqlx::query_as("SELECT user_id, stored_name FROM files")
-            .fetch_one(&t.pool)
-            .await
-            .unwrap();
+    let (uid, stored): (String, String) = sqlx::query_as("SELECT user_id, stored_name FROM files")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read(blob_path(&t, &uid, &stored)).unwrap(), b"a");
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
         .fetch_one(&t.pool)
