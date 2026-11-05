@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{StatusCode, header, HeaderValue};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::{AppState, handlers_auth::SessionUser};
@@ -333,8 +333,14 @@ pub async fn download(
         .collect();
     let cd = format!("attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{pct}");
     let headers = resp.headers_mut();
-    headers.insert(header::CONTENT_DISPOSITION, HeaderValue::from_str(&cd).unwrap());
-    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&cd).unwrap(),
+    );
+    headers.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert(
         "Content-Security-Policy",
         HeaderValue::from_static("default-src 'none'"),
