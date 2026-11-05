@@ -565,6 +565,10 @@ use std::sync::Mutex;
 const HOUR: u64 = 3600;
 const MAX_WAIT: u64 = 60;
 
+impl Default for RateLimiter {
+    fn default() -> Self { Self::new() }
+}  // clippy new_without_default: Default manuale (Box<dyn Fn> non derive)
+
 pub struct RateLimiter {
     fails: Mutex<HashMap<String, (u32, Instant)>>,
     now: Box<dyn Fn() -> Instant + Send + Sync>,
@@ -577,7 +581,13 @@ impl RateLimiter {
 
     // per i test: orologio iniettabile, il tempo simula l'avanzamento senza sleep
     pub fn with_clock(now: Box<dyn Fn() -> Instant + Send + Sync>) -> Self {
-        Self { fails: Mutex::new(HashMap::new()), now: now }
+        Self { fails: Mutex::new(HashMap::new()), now }
+    }
+
+    pub fn reap(&self) {
+        // voci vecchie di 1 h escono dal map (evita accumulo per email inventate)
+        let now = (self.now)();
+        self.fails.lock().unwrap().retain(|_, (_, last)| now.duration_since(*last).as_secs() < HOUR);
     }
 
     pub fn check(&self, key: &str) -> Result<(), u64> {
@@ -601,8 +611,8 @@ impl RateLimiter {
 
     pub fn success(&self, key: &str) { self.fails.lock().unwrap().remove(key); }
 }
-// login: due chiavi, IP ( ultimo XFF ) e email ("mail:<email>"); check 429 se una
-// delle due è in attesa; fail() e success() agiscono su ambedue.
+// login: due chiavi, IP ( ultimo XFF ) e email ("mail:<email>"); check 429 se UNA
+// delle due è in attesa → usare .and(), MAI .or (che blocca solo se entrambe).
 
 pub const COOKIE_MAX_AGE: i64 = 30 * 24 * 3600;
 
@@ -729,10 +739,10 @@ login su doppia chiave (ip + mail):
 ```rust
 let ip_key = ip.to_string();
 let mail_key = format!("mail:{}", c.email.to_lowercase());
-if let Err(wait) = s.limiter.check(&ip_key).or(s.limiter.check(&mail_key)) {
+if let Err(wait) = s.limiter.check(&ip_key).and(s.limiter.check(&mail_key)) {
     return err(StatusCode::TOO_MANY_REQUESTS, &format!("riprova tra {wait} secondi"));
 }
-// su fallito: s.limiter.fail(&ip_key); s.limiter.fail(&mail_key);
+// on fallito: s.limiter.fail(&ip_key); s.limiter.fail(&mail_key); + limiter.reap()
 // su success: s.limiter.success(&ip_key); s.limiter.success(&mail_key);
 
 #[derive(Deserialize)] pub struct Creds { pub email: String, pub password: String }
@@ -807,18 +817,31 @@ pub async fn admin_create(user: SessionUser, State(s): State<AppState>, Json(c):
 }
 
 /* reset-password CLI in main.rs (emergenza locale sul gateway):
-   args: reset-password <email> <nuova> → spawn_blocking hash + UPDATE users +
-   DELETE FROM sessions WHERE user_id = ?; poi exit. Con VAULTI_DATA_DIR coerente. */
+   args SOLO reset-password <email> (la nuova password LETTA DA STDIN, mai argv —
+   resterebbe nella history della shell). spawn_blocking hash + UPDATE users +
+   DELETE FROM sessions WHERE user_id = ?; poi exit. VAULTI_DATA_DIR coerente. */
 ```
 Origin guard (CSRF) middleware in `lib.rs` build_router:
 ```rust
-async fn origin_guard(method: &str, headers: &HeaderMap, host: Option<&str>) -> bool {
-    if method != "POST" && method != "PATCH" && method != "DELETE" { return true; }
+async fn origin_guard(method: &str, headers: &HeaderMap) -> bool {
+    if !matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") { return true; }
+    // 1) Sec-Fetch-Site (browser moderni): ammessi same-origin e none
+    if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        return matches!(site, "same-origin" | "none");
+    }
+    // 2) ripiego: Origin assente → ok; presente → l'host deve coincidere con
+    //    X-Forwarded-Host (aggiunto dal proxy fidato) o Host
     let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) else { return true };
-    let host = host.map(|h| h.to_string()).unwrap_or_default();
-    origin.rsplit("//").next().unwrap_or(origin) == host
+    let oh = headers.get("x-forwarded-host").or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok()).unwrap_or("").trim_end_matches('/');
+    let ohport = origin.trim_start_matches("http://").trim_start_matches("https://")
+        .trim_end_matches('/');
+    oh == ohport
 }
-// applicato come middleware axum che risponde 403 {"error":"origin non valido"} sul mismatch.
+// middleware axum: mismatch → 403 {"error":"origin non valido"}.
+// Da verificare REALLY sul gateway cosa manda tailscale serve (Sec-Fetch-Site è
+// standard dal browser): se Host = 127.0.0.1:8420 il confronto Host puro rompe
+// tutto, per questo la prima regola è Sec-Fetch-Site.
 
 - [ ] **Step 4: routes in `lib.rs`**:
 ```rust
@@ -1171,10 +1194,9 @@ pub async fn finish(State(s): State<AppState>, user: SessionUser, Path(id): Path
     let stored = uuid::Uuid::new_v4().to_string();
     let meta = match tokio::fs::metadata(&src).await { Ok(m) => m, Err(_) => return err(StatusCode::CONFLICT, "tmp mancante") };
     if meta.len() != up.size as u64 { return err(StatusCode::CONFLICT, "size finale disallineata"); }
-    // sync_all prima del rename: i dati ci sono già a bordo
+    // sync_all prima del rename: dati a bordo (sync_all non è trait method: niente import, f non mut)
     if up.size > 0 {
-        let mut f = tokio::fs::File::open(&src).await.unwrap();
-        use tokio::io::AsyncWriteExt;
+        let f = tokio::fs::File::open(&src).await.unwrap();
         f.sync_all().await.unwrap();
     }
     tokio::fs::rename(&src, format!("{dst_dir}/{stored}")).await.unwrap();
@@ -1211,7 +1233,7 @@ Router::new()
     .merge(chunk_routes)
     ...
 ```
-(Ricorda: axum 0.8 è `{id}` — nota fix per la TRUE: use `{id}/{n}` syntax.)
+(Ricorda: in axum 0.8 i parametri di route si scrivono `{id}` e `{n}`, non `:id`/`:n`.)
 - [ ] **Step 5: run test** — tutti verdi.
 - [ ] **Step 6: Commit:** `feat: upload preallocato stream chunks rename finish cancel sweep`
 
@@ -1220,8 +1242,8 @@ Router::new()
 **Files:** Create `server/src/handlers_files.rs`; Modify `lib.rs` (4 routes)
 **Interfaces:**
 - `GET /api/files?folder_id=` → elenco: `folders` (id,name) figli + `files` (id,name,size,mime,
-  created_at) della folder (folder_id NULL se assente il param) + `{"quota": {"used": SUM(size)
-  di tutti di files vivi eliminati, "free": spazio disponibile sul disco}}`.
+  created_at) della cartella (folder_id NULL se assente il param) + `{"quota": {"used": somma size
+  di tutti i file vivi dell'utente, "free": spazio disponibile sul disco}}`.
 - `POST /api/folders {name, parent_id?}` → `{"id"}`: parent verificato owner (404 se non tuo);
   nome duplicato nella stessa cartella → 409 (UNIQUE user_id+parent_key+name, `parent_key` =
   colonna generata `COALESCE(parent_id,'!root!')`).
@@ -1296,30 +1318,34 @@ async fn delete_hard_removes_row_and_blob() {
 async fn folder_delete_empty_only_cycles_and_dups() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let (f1, _) = post_folder(&t, &cookie, "c1", None).await;
+    let (f1, st) = post_folder(&t, &cookie, "c1", None).await;
+    assert_eq!(st, 200);
     // duplicato nella stessa cartella → 409
-    assert_eq!(post_folder(&t, &cookie, "c2", None).await.1, 200);
     assert_eq!(post_folder(&t, &cookie, "c1", None).await.1, 409);
-    // anti-ciclo: f1 dentro f2 ok, poi f2 dentro f1 (discendente) → 400
+    // stesso nome in un'altra cartella è legale
     let (f2, _) = post_folder(&t, &cookie, "c2", None).await;
-    t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f1}"),
+    let (_, sub) = post_folder(&t, &cookie, "c1b", Some(&f2)).await;
+    assert_eq!(sub, 200);
+    // anti-ciclo: f1 dentro f2 ok, poi f2 dentro f1 (suo discendente) → 400
+    let ok = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f1}"),
         Some(serde_json::json!({"parent_id": f2})), &cookie)).await.unwrap();
+    assert_eq!(ok.status(), 200);
     let resp = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f2}"),
         Some(serde_json::json!({"parent_id": f1})), &cookie)).await.unwrap();
     assert_eq!(resp.status(), 400);
-    // DELETE cartella con subfolder dentro → 409; DELETE vuota → 200
-    let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f2}"),
+    // DELETE cartella con subfolder dentro c1 → 409; DELETE vuota f2 → 200
+    let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f1}"),
         None, &cookie)).await.unwrap();
     assert_eq!(resp.status(), 409);
+    let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f2}"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(resp.status(), 409); // f2 ha ancora c1 dentro
     // parent inesistente → 404
-    let resp = t.app.clone().oneshot(authed_req("POST", "/api/folders",
-        Some(serde_json::json!({"name":"x","parent_id": "00000000-0000-0000-0000-000000000000"})),
+    let resp = t.app.oneshot(authed_req("POST", "/api/folders",
+        Some(serde_json::json!({"name":"x","parent_id":"00000000-0000-0000-0000-000000000000"})),
         &cookie)).await.unwrap();
     assert_eq!(resp.status(), 404);
 }
-
-// nota: qui sopra il secondo post "c2" collide col terzo: sostituito nel run reale da
-// nomi disgiunti; il test 살아 coperto è l'identità 409 sul secondo "c1" identico.
 
 pub async fn post_folder(t: &TestApp, cookie: &str, name: &str, parent: Option<&str>)
     -> (String, StatusCode)

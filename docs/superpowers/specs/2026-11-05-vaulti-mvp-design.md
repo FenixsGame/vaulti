@@ -21,12 +21,14 @@ desktop, senza backup.
 - Sessioni: token casuale 256 bit. Nel DB si salva solo lo **hash SHA-256** del token (crate
   `sha2`): dal DB non si risale al cookie. Cookie: `session=<token>; HttpOnly; Secure;
   SameSite=Lax; Path=/; Max-Age=2592000` (30 giorni).
-- Rate limit login: contatore in memoria. Chiave = **ultimo elemento** di `X-Forwarded-For`
-  (quello aggiunto dal proxy fidato; il primo dell'header è falsificabile e il brute-force lo
-  cambia a ogni tentativo) + un secondo contatore **per email**. Regola: dopo 5 falliti, attesa
-  `2^(n-5)` secondi con limite 60; `last_fail` aggiornato a ogni fallito (il buco del
-  brute-force lento resta chiuso); reset dopo 1 h senza falliti o al successo. L'orologio è
-  **iniettabile** (closure `now()`), i test simulano il tempo senza sleep.
+- Rate limit login: contatore in memoria. **Due chiavi**: IP = **ultimo elemento** di
+  `X-Forwarded-For` (quello aggiunto dal proxy fidato; il primo è falsificabile) e
+  `mail:<email>`. Il login risponde 429 se **una delle due** è in attesa
+  (`check(ip).and(check(email))`, non `or`). Regola: dopo 5 falliti, attesa `2^(n-5)`
+  secondi con limite 60; `last_fail` aggiornato a ogni fallito; reset dopo 1 h senza
+  falliti o al successo; a ogni login `reap()` cancella le voci vecchie (le email
+  inventate si accumulano nel map). Orologio iniettabile per test senza sleep.
+  Accettato: chi è in tailnet può bloccare l'admin al massimo 60 secondi per volta.
 - Registrazione chiusa e atomica: un solo statement
   `INSERT INTO users(...) SELECT ... WHERE (SELECT COUNT(*) FROM users) = 0` — rows_affected 0
   → 403. Niente race tra due richieste. Primo utente = admin. Subito dopo il deploy chiunque
@@ -63,20 +65,24 @@ desktop, senza backup.
   `POST /api/folders`, `PATCH /api/folders/:id`, `DELETE /api/folders/:id` (solo se vuota:
   file o subfolder dentro → 409), `PATCH /api/files/:id` (rinomina/sposta), `GET
   /api/files?folder_id=`. Anti-ciclo allo spostamento: il nuovo parent non può essere la
-  cartella stessa o un suo discendente (caminhante su `parent_id`). Nomi duplicati
-  vietati: `UNIQUE(user_id, parent_key, name)` con `parent_key` = colonna generata
-  `COALESCE(parent_id, '\<root\>')`; duplicato → 409 "nome già in uso". (Nelle stringhe SQL
-  il letterale della radice è `!root!` per evitare escape.)
+  cartella stessa o un suo discendente (risalita di `parent_id`). Nomi duplicati vietati per
+  **cartelle e file**: `UNIQUE(user_id, parent_key, name)` con `parent_key` colonna generata
+  `COALESCE(parent_id, '!root!')`, e `UNIQUE(user_id, folder_key, name)` su `files` con
+  `folder_key` = `COALESCE(folder_id, '!root!')`; duplicato → 409 "nome già in uso" (anche a
+  `finish` per i file).
 - Delete: **hard delete** (DELETE riga + `remove_file` blob). Scelta consapevole: senza backup
   l'hard delete è irreversibile; il soft delete senza purge non libererebbe mai spazio.
   Cestino + purge = fase B.
 - SQLite: WAL + busy_timeout 5 s; `users.email UNIQUE COLLATE NOCASE`.
-- CSRF/Origin: le route che modificano dati (POST/PATCH/DELETE) rifiutano richieste con header
-  `Origin` diverso dall'`Host` della richiesta (con SameSite=Lax, altre macchine della tailnet
-  potrebbero risultare same-site: la verifica esplicita chiude il caso).
-- Cambio password di emergenza: subcommand CLI `vaulti-server reset-password <email> <nuova>`
-  da eseguire come `vaulti` sul gateway (funziona anche se il DB è al buio: aggiorna hash
-  argon2 + invalida tutte le sessioni di quell'utente).
+- CSRF: le route che modificano dati (POST/PUT/PATCH/DELETE) verifichano **Sec-Fetch-Site**:
+  ammessi solo `same-origin` e `none`. Ripiego quando l'header manca (browser vecchi): header
+  `Origin` assente → ok, presente → confronto l'host con `X-Forwarded-Host` (e con `Host`);
+  mismatch → 403. Da verificare con la realtà di `tailscale serve` sul gateway, il che
+  avverrà durante il deploy: se Host viene a 127.0.0.1, la regola di confronto Host
+  bloccherebbe tutta la dashboard.
+- Cambio password di emergenza: subcommand CLI `vaulti-server reset-password <email>`, la nuova
+  password letta **da stdin** (mai in argv, resterebbe nella history della shell). Aggiorna
+  hash argon2 + invalida tutte le sessioni di quell'utente.
 - Filesystem del disco dati: deve essere **ext4, XFS o btrfs locale** (mai NTFS/exFAT/SMB:
   WAL e rename atomico ne risentono). `tmp/` e `storage/` vivono sotto la stessa `VAULTI_DATA_DIR`
   (stessa mount point). Verifica nel deploy README.
