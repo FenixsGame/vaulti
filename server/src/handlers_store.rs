@@ -76,7 +76,7 @@ pub async fn start(
     }
     let id = uuid::Uuid::new_v4().to_string();
     // ceil intero: size 0 → total 0 (nessun chunk atteso, finish accetta somma 0)
-    let total: i64 = ((rb.size + s.chunk_size - 1) / s.chunk_size) as i64;
+    let total: i64 = rb.size.div_ceil(s.chunk_size) as i64;
     let updir = format!("{dir}/{id}");
     tokio::fs::create_dir_all(&updir).await.unwrap();
     let f = tokio::fs::File::create(format!("{updir}/data"))
