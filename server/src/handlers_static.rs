@@ -14,5 +14,8 @@ pub async fn appjs() -> ([(HeaderName, &'static str); 1], &'static str) {
 }
 
 pub async fn style() -> ([(HeaderName, &'static str); 1], &'static str) {
-    ([(CONTENT_TYPE, "text/css")], include_str!("../../web/style.css"))
+    (
+        [(CONTENT_TYPE, "text/css")],
+        include_str!("../../web/style.css"),
+    )
 }
