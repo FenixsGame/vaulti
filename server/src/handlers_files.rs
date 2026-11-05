@@ -19,12 +19,7 @@ fn now() -> i64 {
 }
 
 /// owner-check generico: Some(id) se la riga esiste e appartiene all'utente
-async fn owns(
-    pool: &sqlx::SqlitePool,
-    user_id: &str,
-    table: &str,
-    id: &str,
-) -> bool {
+async fn owns(pool: &sqlx::SqlitePool, user_id: &str, table: &str, id: &str) -> bool {
     let q = format!("SELECT 1 FROM {table} WHERE id = ? AND user_id = ? LIMIT 1");
     let r: Option<i64> = sqlx::query_scalar(&q)
         .bind(id)
@@ -242,7 +237,10 @@ pub async fn patch_file(
     }
     if let Some(fid) = &pb.folder_id {
         if !owns(&s.pool, &user.user_id, "folders", fid).await {
-            return err(StatusCode::NOT_FOUND, "cartella di destinazione sconosciuta");
+            return err(
+                StatusCode::NOT_FOUND,
+                "cartella di destinazione sconosciuta",
+            );
         }
     }
     if let Err(e) = sqlx::query(

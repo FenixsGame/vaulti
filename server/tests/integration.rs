@@ -667,12 +667,11 @@ async fn list_files_and_folders_and_quota() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    let nm: String =
-        sqlx::query_scalar("SELECT name FROM files WHERE id = ?")
-            .bind(&fid)
-            .fetch_one(&t.pool)
-            .await
-            .unwrap();
+    let nm: String = sqlx::query_scalar("SELECT name FROM files WHERE id = ?")
+        .bind(&fid)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
     assert_eq!(nm, "rin.doc.txt");
 }
 
@@ -683,13 +682,12 @@ async fn delete_hard_removes_row_and_blob() {
     let id = start_upload(&t, &cookie, "d.bin", 2).await;
     put_chunk(&t, &cookie, &id, 0, b"ab").await;
     let fid = finish_ok(&t, &cookie, &id).await;
-    let (uid, stored): (String, String) = sqlx::query_as(
-        "SELECT f.user_id, f.stored_name FROM files f WHERE f.id = ?",
-    )
-    .bind(&fid)
-    .fetch_one(&t.pool)
-    .await
-    .unwrap();
+    let (uid, stored): (String, String) =
+        sqlx::query_as("SELECT f.user_id, f.stored_name FROM files f WHERE f.id = ?")
+            .bind(&fid)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     let blob = std::fs::read(blob_path(&t, &uid, &stored)).unwrap();
     assert_eq!(blob, b"ab");
     let res = t
@@ -704,7 +702,14 @@ async fn delete_hard_removes_row_and_blob() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    assert!(!t.data_dir.path().join("storage").join(&uid).join(&stored).exists());
+    assert!(
+        !t.data_dir
+            .path()
+            .join("storage")
+            .join(&uid)
+            .join(&stored)
+            .exists()
+    );
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files")
         .fetch_one(&t.pool)
         .await
