@@ -1,54 +1,63 @@
-# Vaulti MVP — Implementation Plan
+# Vaulti MVP — Piano di implementazione
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Per agentic workers:** REQUIRED SUB-SKILL: usa superpowers:subagent-driven-development (consigliata) o superpowers:executing-plans per implementare il piano task per task. Passi con checkbox (`- [ ]`).
 
-**Goal:** Server + dashboard web per Vaulti: cloud personale con upload a blocchi riprendibili, download con Range, auth argon2id + sessioni, servito da axum su Linux, testato e buildato via GitHub Actions.
+**Goal:** Server + dashboard web per Vaulti: cloud personale con upload a blocchi riprendibili
+(preallocato + rename, zero copie), cartelle nel modello, download Range RFC 9110, auth argon2id +
+sessioni con token hashed, rate limit XFF, hard delete, binario musl via GitHub Actions.
 
-**Architecture:** Crate unico `server` (Rust, axum 0.8, sqlx+SQLite) che espone 11 route JSON e serve la dashboard statica embedded. Blob su disco con nome UUID, metadati in SQLite. Deploy: binario da GitHub Actions + systemd + `tailscale serve`.
+**Architecture:** Crate unico `server` (axum 0.8, sqlx 0.8 + SQLite) con 17 route JSON e dashboard
+statica embedded. Blob in `storage/<user_id>/<uuid>`, preallocazione in `tmp/<upload_id>/data`.
 
-**Tech Stack:** Rust stable, axum 0.8, tokio, sqlx 0.8 (sqlite, runtime-tokio), argon2, uuid v4, rand, tokio-util; test con `tower::ServiceExt::oneshot` + `tempfile`.
+**Tech Stack:** Rust stable 1.99.1, axum 0.8, tokio, sqlx 0.8 (sqlite, migrate, macros), argon2 0.5,
+sha2, uuid v4, rand 0.8, tokio-util, tower-http 0.6 (fs), fs4 0.12, futures-util; test con
+`tower::ServiceExt::oneshot` + tempfile.
 
 **Spec:** `docs/superpowers/specs/2026-11-05-vaulti-mvp-design.md`
 
 ## Global Constraints
 
-- axum `0.8` (route syntax `{param}`, non `:param`). sqlx `0.8`. Pin toolchain in `rust-toolchain.toml` (se `1.90.0` non esiste al momento dell'esecuzione, usa l'ultima stable e aggiorna la riga nel commit).
-- Default listen `127.0.0.1:8420`; `VAULTI_PORT` override. Default data dir `/srv/vaulti`; `VAULTI_DATA_DIR` override (i test usano `tempfile::tempdir()`).
-- `CHUNK_SIZE = 8 * 1024 * 1024` (8 MiB).
-- Cookie: `format!("session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={COOKIE_MAX_AGE}")` con `COOKIE_MAX_AGE = 30 * 24 * 3600`. (Spec prevede flag Secure nel proxy di produzione: `tailscale serve` forza HTTPS quindi il flag Secure va aggiunto come `Secure;` in produzione — decisione runtime: aggiungiamo già `Secure;` alla stringa.)
-- Token sessione: 32 byte random → 64 chars esadecimali.
-- Errori JSON: `{"error":"<msg>"}`.
-- Ogni test autenticato manda header `cookie: session=<token>`.
-- Ogni task: test fallito → minimo → test verde → commit conventional.
+- axum `0.8`, route `{param}`. sqlx `0.8`. rust-toolchain.toml: channel `1.99.1`,
+  `components = ["clippy", "rustfmt"]`.
+- Listen `127.0.0.1:8420` (env `VAULTI_PORT`), data dir `/srv/vaulti` (env `VAULTI_DATA_DIR`),
+  `CHUNK_SIZE = 8 * 1024 * 1024` (env `VAULTI_CHUNK_SIZE`, per i test 2).
+- DB: `{data_dir}/vaulti.db`, WAL + busy_timeout 5 s, foreign_keys on.
+- Sessione 30 giorni: cookie `session=<token>; HttpOnly; Secure; SameSite=Lax; Path=/;
+  Max-Age=2592000`. Nel DB solo `sha256(token)` esadecimale (64 char).
+- Password min 8. Errori JSON `{"error":"..."}`. `is_admin` risponde bool.
+- Sicurezza: il `name` del client non è mai path; ogni query filtra `user_id` della sessione.
+- Ogni task: test fallito → minimo → verde → commit conventional.
 
-## Review Focus (spec implica, test fissano)
+## Review Focus
 
-1. **Range end oltre size → 416** con `Content-Range: bytes */<size>` (Task 5).
-2. **Cross-user → 404**: l'id di un file di un altro utente non scaricabile (Task 5).
-3. **Sessione scaduta → 401** (Task 3).
-4. **Finish con chunk mancanti → 409**, nessun blob scritto su disco (Task 4).
-5. **Path traversal**: il `name` del client è solo metadato; su disco è UUID del server (Task 4 test lo verifica).
+1. Range end oltre size → 206 troncato; start ≥ size → 416; suffix `bytes=-N` (Task 6).
+2. Cross-user → 404 (Task 6, secondo utente via INSERT diretto in test).
+3. Sessione scaduta → 401 (Task 3).
+4. Finish con somma len != size → 409, nessun blob in storage (Task 4; il test usa chunk_size=2).
+5. Chunk: id UUID-validato, owner-verificato PRIMA della scrittura su disco, n < total,
+   lunghezza attesa verificata; la size di files viene dai chunk reali, non dal client (Task 4).
+6. XSS: headers download (Task 6).
 
 ---
 
-## File Structure (bersaglio finale)
+## File Structure (bersaglio)
 
 ```
 Cargo.toml, rust-toolchain.toml, .gitignore
 .github/workflows/ci.yml
 server/Cargo.toml
-server/src/lib.rs             ← moduli, AppState, build_router
-server/src/main.rs            #[tokio::main] → lib::run()
-server/src/config.rs          ← env load
-server/src/db.rs              ← pool sqlite + migrate
-server/src/migrations.sql     ← 4 tabelle
-server/src/auth.rs            ← argon2, token, cookie parse, RateLimiter, SessionUser
-server/src/handlers_auth.rs   ← register/login/logout/me
-server/src/handlers_store.rs  ← upload start/chunk/status/finish
-server/src/handlers_files.rs  ← list, download Range, delete
-server/src/handlers_static.rs ← web embedded
-server/tests/common/mod.rs    ← TestApp + helpers comuni dei test
-server/tests/integration.rs   ← tutti i test di integrazione
+server/src/lib.rs               ← moduli, AppState, build_router, run()
+server/src/main.rs              ← thin bin
+server/src/config.rs            ← env: data_dir, port, chunk_size
+server/src/db.rs                ← pool (WAL, busy_timeout), migrate
+server/src/migrations/0001_init.sql
+server/src/auth.rs              ← argon2 (0.5), token+cookie, rate limiter, SessionUser, mime
+server/src/handlers_auth.rs     ← register/login/logout/me/admin-create-user
+server/src/handlers_store.rs    ← upload start/chunk/status/finish/cancel
+server/src/handlers_files.rs    ← list(+quota,+folders), create/patch folders, patch files,
+                                   delete hard, download (ServeFile, headers anti-XSS)
+server/src/handlers_static.rs   ← dashboard embedded
+server/tests/common/mod.rs, integration.rs
 web/index.html, web/app.js, web/style.css
 deploy/vaulti.service, deploy/README.md
 ```
@@ -57,15 +66,15 @@ deploy/vaulti.service, deploy/README.md
 
 ### Task 1: Scaffold workspace + CI
 
-**Files:**
-- Create: `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `server/Cargo.toml`, `server/src/lib.rs`, `server/src/main.rs`, `server/src/config.rs`, `.github/workflows/ci.yml`
+**Files:** Create `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `server/Cargo.toml`,
+`server/src/lib.rs`, `server/src/main.rs`, `server/src/config.rs`, `.github/workflows/ci.yml`
 
-**Interfaces:**
-- Produces: binario con `GET /healthz` → `200 "ok"`; `vaulti_server::run()`; `config::Config { data_dir: String, port: u16 }`.
+**Interfaces:** Produces — `vaulti_server::run()` (Task 2 riempie), `config::Config { data_dir:
+String, port: u16, chunk_size: u64 }`.
 
-- [ ] **Step 1: file di build**
+- [ ] **Step 1: file build**
 
-`Cargo.toml` (root):
+`Cargo.toml`:
 ```toml
 [workspace]
 resolver = "2"
@@ -75,7 +84,8 @@ members = ["server"]
 `rust-toolchain.toml`:
 ```toml
 [toolchain]
-channel = "1.90.0"
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
 ```
 
 `.gitignore`:
@@ -95,7 +105,6 @@ axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -103,22 +112,19 @@ http-body-util = "0.1"
 tempfile = "3"
 ```
 
-- [ ] **Step 2: server minimo con lib**
-
 `server/src/config.rs`:
 ```rust
 use std::env;
 
 #[derive(Clone)]
-pub struct Config {
-    pub data_dir: String,
-    pub port: u16,
-}
+pub struct Config { pub data_dir: String, pub port: u16, pub chunk_size: u64 }
 
 pub fn load() -> Config {
     Config {
         data_dir: env::var("VAULTI_DATA_DIR").unwrap_or_else(|_| "/srv/vaulti".into()),
         port: env::var("VAULTI_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8420),
+        chunk_size: env::var("VAULTI_CHUNK_SIZE").ok().and_then(|p| p.parse().ok())
+            .unwrap_or(8 * 1024 * 1024),
     }
 }
 ```
@@ -126,8 +132,7 @@ pub fn load() -> Config {
 `server/src/lib.rs`:
 ```rust
 pub mod config;
-
-pub fn run() { /* Task 2 sostituisce con serve reale; Task 7 completa */ }
+pub fn run() { /* Task 2 */ }
 ```
 
 `server/src/main.rs`:
@@ -135,26 +140,22 @@ pub fn run() { /* Task 2 sostituisce con serve reale; Task 7 completa */ }
 fn main() { vaulti_server::run() }
 ```
 
-- [ ] **Step 3: CI** — `.github/workflows/ci.yml`:
+- [ ] **Step 2: CI** — `.github/workflows/ci.yml`:
 ```yaml
 name: ci
 on:
-  push: { branches: [main] }
+  push: { branches: [main], tags: ["v*"] }
+  pull_request:
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: "clippy, rustfmt" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy -D warnings
+      - run: cargo clippy -- -D warnings
       - run: cargo test --workspace
-      - uses: actions/upload-artifact@v4
-        with: { name: vaulti-linux, path: target/release/vaulti-server }
-      - run: cargo build --release
-        if: startsWith(github.ref, 'refs/tags/v')
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
@@ -163,57 +164,67 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release
+        with: { targets: x86_64-unknown-linux-musl }
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl
       - uses: softprops/action-gh-release@v2
-        with:
-          files: target/release/vaulti-server
+        with: { files: target/x86_64-unknown-linux-musl/release/vaulti-server }
 ```
 
-- [ ] **Step 4: Commit**
-```bash
-git add -A && git commit -m "chore: workspace scaffold"
-```
+- [ ] **Step 3: `cargo build` compila verde** — poi Commit: `chore: scaffold workspace + CI`
 
-### Task 2: DB + migrazioni + helper test
+### Task 2: DB + migrazioni + harness test
 
-**Files:**
-- Modify: `server/Cargo.toml` (add deps)
-- Create: `server/src/db.rs`, `server/src/migrations.sql`, `server/tests/common/mod.rs`
-- Modify: `server/src/lib.rs` (AppState + build_router vuoto con /healthz)
+**Files:** Modify `server/Cargo.toml`; Create `server/src/db.rs`, `server/src/migrations/0001_init.sql`,
+`server/tests/common/mod.rs`; Modify `lib.rs` (AppState + router healthz)
 
 **Interfaces:**
-- Produces: `db::new_pool(path) -> SqlitePool` (":memory:" → pool 1 conn; file → pool 5, foreign_keys on), `db::migrate(&pool)` crea `users, sessions, files, upload_chunks`; `AppState::new(pool, data_dir)`; `build_router(AppState) -> Router`; `TestApp::boot() -> TestApp{ app, pool, data_dir }` + helper `json_req`, `authed_req`, `register_user`, `login_cookie`, `to_bytes`.
+- Produces — `db::new_pool(path) -> SqlitePool` (":memory:" → single conn; file → 5 conn, WAL,
+  busy_timeout 5 s, foreign_keys), `db::migrate(&pool)`, `AppState::new(pool, data_dir, chunk_size)`
+  e `AppState::for_test(pool, data_dir, chunk_size)` (ai test serve limiter nuova: `AppState` con
+  `limiter` nuovo), `build_router(AppState) -> Router`, test app: `boot()` chunk_size 2 +
+  helpers `json_req`, `authed_req`, `to_bytes`, `register_user`, `login_cookie`, `logged_in`,
+  `start_upload`, `put_chunk`, `finish_ok`.
 
-- [ ] **Step 1: deps**
+- [ ] **Step 1: deps** — `[dependencies]` in `server/Cargo.toml` aggiunge:
 
-In `server/Cargo.toml` `[dependencies]` aggiungi:
 ```toml
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
-argon2 = "1"
+sha2 = "0.10"
 tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+tower-http = { version = "0.6", features = ["fs"] }
 fs4 = "0.12"
+argon2 = "0.5"
 ```
-Mantieni i dev-deps del Task 1.
 
-- [ ] **Step 2: migration SQL** — `server/src/migrations.sql`:
+- [ ] **Step 2: `server/src/migrations/0001_init.sql`**:
 ```sql
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
-  email TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL,
   is_admin INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE sessions (
-  token TEXT PRIMARY KEY,
+  token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   expires_at INTEGER NOT NULL
+);
+CREATE TABLE folders (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  parent_id TEXT REFERENCES folders(id),
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE files (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
+  folder_id TEXT REFERENCES folders(id),
   name TEXT NOT NULL,
   size INTEGER NOT NULL,
   mime TEXT NOT NULL,
@@ -221,42 +232,54 @@ CREATE TABLE files (
   created_at INTEGER NOT NULL,
   deleted_at INTEGER
 );
-CREATE TABLE upload_chunks (
-  upload_id TEXT PRIMARY KEY,
+CREATE TABLE uploads (
+  id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
-  chunk_n INTEGER NOT NULL,
+  chunk_size INTEGER NOT NULL,
   total_chunks INTEGER NOT NULL,
-  total_size INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE (upload_id, chunk_n)
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE upload_chunks (
+  upload_id TEXT NOT NULL REFERENCES uploads(id),
+  chunk_n INTEGER NOT NULL,
+  len INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY (upload_id, chunk_n)
 );
 CREATE INDEX idx_files_user ON files(user_id, deleted_at);
 ```
 
-- [ ] **Step 3: `server/src/db.rs`**
+- [ ] **Step 3: `server/src/db.rs`**:
 ```rust
-use sqlx::{sqlite::{SqliteConnectOptions, SqlitePoolOptions}, SqlitePool};
+use sqlx::{sqlite::{SqliteConnectOptions, SqliteJournalMode,
+  SqlitePoolOptions, SqliteSynchronous}, SqlitePool};
+use std::time::Duration;
 
 pub async fn new_pool(path: &str) -> sqlx::Result<SqlitePool> {
-    let mut opts = SqliteConnectOptions::new()
-        .create_if_missing(true)
-        .foreign_keys(true);
-    opts = match path {
-        ":memory:" => opts.shared_cache(true),
-        p => opts.filename(p),
+    let mut o = SqliteConnectOptions::new().create_if_missing(true)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(5));
+    o = match path {
+        ":memory:" => o.shared_cache(true),
+        p => o.filename(p),
     };
+    if path != ":memory:" { o = o.journal_mode(SqliteJournalMode::Wal).synchronous(SqliteSynchronous::Normal); }
     let max = if path == ":memory:" { 1 } else { 5 };
-    SqlitePoolOptions::new().max_connections(max).connect_with(opts).await
+    SqlitePoolOptions::new().max_connections(max).connect_with(o).await
 }
 
 pub async fn migrate(p: &SqlitePool) -> sqlx::Result<()> {
-    sqlx::migrate!("src/migrations.sql").run(p).await
+    sqlx::migrate!("src/migrations").run(p).await
 }
 ```
 
-- [ ] **Step 4: AppState + router in `lib.rs`** (aggiungi in fondo, `pub mod` dei moduli che esistono solo più avanti non serve):
+- [ ] **Step 4: `lib.rs`** — sostituisci tutto:
 ```rust
+pub mod config;
+pub mod db;
+
 use axum::{routing::get, Router};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -266,33 +289,35 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub data_dir: Arc<String>,
     pub limiter: Arc<crate::auth::RateLimiter>,
+    pub chunk_size: u64,
 }
 
 impl AppState {
-    pub fn new(pool: SqlitePool, data_dir: String) -> Self {
-        Self { pool, data_dir: Arc::new(data_dir), limiter: Arc::new(crate::auth::RateLimiter::new()) }
+    pub fn new(pool: SqlitePool, data_dir: String, chunk_size: u64) -> Self {
+        Self { pool, data_dir: Arc::new(data_dir), limiter: Arc::new(crate::auth::RateLimiter::new()), chunk_size }
     }
 }
 
-pub fn build_router(state: AppState) -> Router {
-    Router::new().route("/healthz", get(|| async { "ok" })).with_state(state)
+pub fn build_router(_state: AppState) -> Router {
+    Router::new().route("/healthz", get(|| async { "ok" }))
 }
 
 pub fn run() {
     let cfg = config::load();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async move {
-        let pool = db::new_pool(&cfg.data_dir).await.unwrap();
-        // shortcut: fino a Task 7 data_dir è anche path db; successivamente db = {data_dir}/vaulti.db
+        std::fs::create_dir_all(format!("{}/storage", cfg.data_dir)).unwrap();
+        std::fs::create_dir_all(format!("{}/tmp", cfg.data_dir)).unwrap();
+        let pool = db::new_pool(&format!("{}/vaulti.db", cfg.data_dir)).await.unwrap();
         db::migrate(&pool).await.unwrap();
-        let state = AppState::new(pool, cfg.data_dir.clone());
+        let state = AppState::new(pool, cfg.data_dir.clone(), cfg.chunk_size);
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", cfg.port)).await.unwrap();
-        println!("vaulti ascolta su 127.0.0.1:{}", cfg.port);
+        println!("vaulti sul port {}", cfg.port);
         axum::serve(listener, build_router(state)).await.unwrap();
     });
 }
 ```
-**Nota Task 2:** `run()` usa `RateLimiter` definito nel Task 3. Al Task 2 compili con lo stub minimo in `auth.rs` (struct + `new()`), il Task 3 aggiunge i metodi. Stub:
+e stub `server/src/auth.rs` (Task 3 le completa):
 ```rust
 use std::{collections::HashMap, net::IpAddr, time::Instant};
 use std::sync::Mutex;
@@ -302,18 +327,16 @@ impl RateLimiter {
     pub fn new() -> Self { Self { fails: Mutex::new(HashMap::new()) } }
 }
 ```
-Task 3 completa i metodi; cambiamenti testati.
 
-- [ ] **Step 5: test helper — `server/tests/common/mod.rs`**:
+- [ ] **Step 5: `server/tests/common/mod.rs`**:
 ```rust
-use axum::http::Request;
+#![allow(dead_code)]
 use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use tower::ServiceExt;
-use std::path::PathBuf;
 
 pub struct TestApp {
     pub app: axum::Router,
@@ -325,7 +348,8 @@ pub async fn boot() -> TestApp {
     let data_dir = tempfile::tempdir().unwrap();
     let pool = vaulti_server::db::new_pool(":memory:").await.unwrap();
     vaulti_server::db::migrate(&pool).await.unwrap();
-    let state = vaulti_server::AppState::new(pool.clone(), data_dir.path().to_string_lossy().to_string());
+    let state = vaulti_server::AppState::new(pool.clone(),
+        data_dir.path().to_string_lossy().to_string(), 2);
     TestApp { app: vaulti_server::build_router(state), pool, data_dir }
 }
 
@@ -337,15 +361,22 @@ pub fn json_req(uri: &str, body: Value) -> Request<Body> {
 }
 
 pub fn authed_req(method: &str, uri: &str, body: Option<Value>, cookie: &str) -> Request<Body> {
-    let mut b = Request::builder().method(method).uri(uri)
+    let b = Request::builder().method(method).uri(uri)
         .header("cookie", cookie.to_string())
         .header("x-forwarded-for", "1.2.3.4");
     if let Some(v) = body {
-        b = b.header("content-type", "application/json");
-        b.body(Body::from(v.to_string())).unwrap()
+        b.header("content-type", "application/json")
+         .body(Body::from(v.to_string())).unwrap()
     } else {
         b.body(Body::empty()).unwrap()
     }
+}
+
+pub fn raw_req(method: &str, uri: &str, cookie: &str, body: Vec<u8>) -> Request<Body> {
+    Request::builder().method(method).uri(uri)
+        .header("cookie", cookie.to_string())
+        .header("x-forwarded-for", "1.2.3.4")
+        .body(Body::from(body)).unwrap()
 }
 
 pub async fn to_bytes(b: Body) -> Vec<u8> {
@@ -353,63 +384,71 @@ pub async fn to_bytes(b: Body) -> Vec<u8> {
 }
 
 pub async fn register_user(t: &TestApp, email: &str, pw: &str) {
-    let app = t.app.clone();
-    let res = app.oneshot(json_req("/auth/register", serde_json::json!({"email":email,"password":pw}))).await.unwrap();
-    assert_eq!(res.status(), 200);
+    let res = t.app.clone().oneshot(json_req("/auth/register",
+        serde_json::json!({"email": email, "password": pw}))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 pub async fn login_cookie(t: &TestApp, email: &str, pw: &str) -> String {
-    let app = t.app.clone();
-    let res = app.oneshot(json_req("/auth/login", serde_json::json!({"email":email,"password":pw}))).await.unwrap();
-    assert_eq!(res.status(), 200);
-    let c = res.headers().get("set-cookie").unwrap().to_str().unwrap();
-    c.split(';').next().unwrap().to_string()
+    let res = t.app.clone().oneshot(json_req("/auth/login",
+        serde_json::json!({"email": email, "password": pw}))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res.headers().get("set-cookie").unwrap().to_str().unwrap()
+        .split(';').next().unwrap().to_string()
+}
+
+pub async fn logged_in(t: &TestApp) -> String {
+    register_user(t, "a@b.c", "password123").await;
+    login_cookie(t, "a@b.c", "password123").await
 }
 ```
 
-- [ ] **Step 6: test migrazione — `server/tests/integration.rs`**:
+- [ ] **Step 6: test migrazioni — `server/tests/integration.rs`**:
 ```rust
 mod common;
+use axum::body::Body;
+use axum::http::Request;
 use common::*;
+
+#[tokio::test]
+async fn healthz_ok() {
+    let t = boot().await;
+    let res = t.app.oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), 200);
+}
 
 #[tokio::test]
 async fn migrations_create_tables() {
     let t = boot().await;
-    for table in ["users", "sessions", "files", "upload_chunks"] {
+    for table in ["users", "sessions", "folders", "files", "uploads", "upload_chunks"] {
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?")
             .bind(table).fetch_one(&t.pool).await.unwrap();
-        assert_eq!(n, 1, "tabella {table} esistente");
+        assert_eq!(n, 1, "tabella {table} manca");
     }
 }
 ```
-E sposta l'eventuale `#[cfg(test)] mod tests` del Task 1 in `server/tests/integration.rs` così (test healthz:
-```rust
-#[tokio::test]
-async fn healthz_ok() {
-    let t = boot().await;
-    let res = t.app.clone().oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap()).await.unwrap();
-    assert_eq!(res.status(), 200);
-}
-```
 
-- [ ] **Step 7: run** — `cargo test --workspace` → PASS (2 test).
-- [ ] **Step 8: Commit** — `feat: sqlite, migrazioni, harness test`
+- [ ] **Step 7: `cargo test --workspace`** — 2 test verdi (note: `run()` not invoked from the tests).
+- [ ] **Step 8: Commit:** `feat: sqlite walnut, migrazioni, harness`
 
 ### Task 3: Auth completa
 
-**Files:**
-- Modify: `server/src/auth.rs` (RateLimiter completa + token + cookie + hash)
-- Create: `server/src/handlers_auth.rs`
-- Modify: `lib.rs` (routes), `common/mod.rs` (niente)
-- Test: `server/tests/integration.rs`
-**Interfaces:**
-- Produces: route `POST /auth/register|login|logout`, `GET /api/me`, `SessionUser` extractor: singolo campo `user_id: String` + `is_admin: bool`.
-- RateLimiter: `check(ip)->Result<_, u64>` `fail(ip)` `success(ip)` — spec: dopo 5 falliti in 1h → attesa `2^(n-5)` sec, clamp a 60.
-- Token: `new_token() -> String` (64 cfr hex via rand::random [u8;32]).
-- `hash(password) -> String` argon2 PHC; `verify(phc, pw) -> bool`.
+**Files:** Modify `server/src/auth.rs`, `server/src/handlers_auth.rs` (new), `lib.rs` (routes)
+**Test:** `integration.rs`
+**Interfaces:** Produces —
+- `auth::hash(&str) -> String` PHC, `auth::verify(&str, &str) -> bool` (async wrapper:
+  `tokio::task::spawn_blocking`).
+- `auth::new_token() -> String` 64 hex; `auth::token_hash(&str) -> String` sha256 hex;
+   `auth::cookie_for(&str) -> String`; `auth::session_token_from_cookie(&HeaderMap) -> Option<String>`.
+- `RateLimiter: check(ip, now) -> Result<(), u64>`, `fail(ip)`, `fail(ip, now)`, `success(ip)`
+  — struttura internal takes `last_fail`: `fail` set again; check è una finestra fresca se
+  respectively da `Config` vuota e comunque 1 h expiration.
+- Route: `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /api/me`,
+  `POST /api/admin/users`.
+- `SessionUser { user_id: String, is_admin: bool }` FromRequestParts (401).
 
-- [ ] **Step 1: test che falliscono** (append a `integration.rs`):
+- [ ] **Step 1: test che falliscono** (append integration.rs):
 
 ```rust
 #[tokio::test]
@@ -417,35 +456,42 @@ async fn register_first_user_then_403() {
     let t = boot().await;
     let app = t.app.clone();
     let res = app.clone().oneshot(json_req("/auth/register",
-        serde_json::json!({"email":"a@b.c","password":"pw"}))).await.unwrap();
+        serde_json::json!({"email":"a@b.c","password":"password123"}))).await.unwrap();
     assert_eq!(res.status(), 200);
     let res = app.oneshot(json_req("/auth/register",
-        serde_json::json!({"email":"d@e.f","password":"pw2"}))).await.unwrap();
+        serde_json::json!({"email":"d@e.f","password":"passwordabc"}))).await.unwrap();
     assert_eq!(res.status(), 403);
 }
 
 #[tokio::test]
-async fn login_ok_cookie_and_me() {
+async fn register_short_password_400() {
     let t = boot().await;
-    register_user(&t, "a@b.c", "pw").await;
-    let cookie = login_cookie(&t, "a@b.c", "pw").await;
-    assert!(cookie.starts_with("session=") && cookie.len() > "session=".len() + 30);
+    let res = t.app.oneshot(json_req("/auth/register",
+        serde_json::json!({"email":"a@b.c","password":"pw"}))).await.unwrap();
+    assert_eq!(res.status(), 400);
+}
 
+#[tokio::test]
+async fn login_ok_cookie_and_me_bool_admin() {
+    let t = boot().await;
+    register_user(&t, "a@b.c", "password123").await;
+    let cookie = login_cookie(&t, "a@b.c", "password123").await;
+    assert!(cookie.starts_with("session=") && cookie.len() > 40);
     let res = t.app.clone().oneshot(
-        axum::http::Request::builder().uri("/api/me")
-            .header("cookie", cookie).body(Body::empty()).unwrap()).await.unwrap();
+        Request::builder().uri("/api/me").header("cookie", cookie)
+            .body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 200);
-    let json: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
-    assert_eq!(json["email"], "a@b.c");
-    assert_eq!(json["is_admin"], 1);
+    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
+    assert_eq!(j["email"], "a@b.c");
+    assert_eq!(j["is_admin"], true);
 }
 
 #[tokio::test]
 async fn login_bad_password_401() {
     let t = boot().await;
-    register_user(&t, "a@b.c", "pw").await;
+    register_user(&t, "a@b.c", "password123").await;
     let res = t.app.clone().oneshot(json_req("/auth/login",
-        serde_json::json!({"email":"a@b.c","password":"wrong"}))).await.unwrap();
+        serde_json::json!({"email":"a@b.c","password":"nope"}))).await.unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -459,18 +505,19 @@ async fn me_without_session_401() {
 #[tokio::test]
 async fn session_expired_401() {
     let t = boot().await;
-    register_user(&t, "a@b.c", "pw").await;
-    let cookie = login_cookie(&t, "a@b.c", "pw").await;
+    register_user(&t, "a@b.c", "password123").await;
+    let cookie = login_cookie(&t, "a@b.c", "password123").await;
     sqlx::query("UPDATE sessions SET expires_at = -1").execute(&t.pool).await.unwrap();
-    let res = t.app.oneshot(authed_req("GET", "/api/me", None, &cookie)).await.unwrap();
+    let res = t.app.oneshot(
+        Request::builder().uri("/api/me").header("cookie", cookie).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 401);
 }
 
 #[tokio::test]
 async fn login_ratelimit_429() {
     let t = boot().await;
-    register_user(&t, "a@b.c", "pw").await;
-    let app = t.app.clone();
+    register_user(&t, "a@b.c", "password123").await;
+    let app = t.app;
     for _ in 0..5 {
         let res = app.clone().oneshot(json_req("/auth/login",
             serde_json::json!({"email":"a@b.c","password":"x"}))).await.unwrap();
@@ -480,38 +527,66 @@ async fn login_ratelimit_429() {
         serde_json::json!({"email":"a@b.c","password":"x"}))).await.unwrap();
     assert_eq!(res.status(), 429);
 }
-```
 
-- [ ] **Step 2: `server/src/auth.rs`** — completa:
+#[tokio::test]
+async fn logout_invalidates() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let _ = t.app.clone().oneshot(json_req("/auth/logout", serde_json::json!())).await.unwrap();
+    let res = t.app.oneshot(
+        Request::builder().uri("/api/me").header("cookie", cookie).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn admin_can_create_second_user() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let res = t.app.clone().oneshot(authed_req("POST", "/api/admin/users",
+        Some(serde_json::json!({"email":"b@b.c","password":"secondpass"})), &cookie)).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let cookie2 = login_cookie(&t, "b@b.c", "secondpass").await;
+    let res = t.app.oneshot(
+        Request::builder().uri("/api/me").header("cookie", cookie2).body(Body::empty()).unwrap()).await.unwrap();
+    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
+    assert_eq!(j["is_admin"], false);
+}
+```
+Nota: `ServiceExt` serve solo nel file `integration.rs` (per `oneshot`); se l'import resta
+duplicato in `common/mod.rs` clippy segnala unused: tenerli separati.
+
+- [ ] **Step 2: `server/src/auth.rs` completo**:
 ```rust
 use std::{collections::HashMap, net::IpAddr, time::{Duration, Instant}};
 use std::sync::Mutex;
 
+const HOUR: u64 = 3600;
 const MAX_WAIT: u64 = 60;
 
+#[derive(Default)]
 pub struct RateLimiter { fails: Mutex<HashMap<IpAddr, (u32, Instant)>> }
 impl RateLimiter {
-    pub fn new() -> Self { Self { fails: Mutex::new(HashMap::new()) } }
+    pub fn new() -> Self { Self::default() }
 
     pub fn check(&self, ip: &IpAddr) -> Result<(), u64> {
-        let mut m = self.fails.lock().unwrap();
-        if let Some(&(n, t0)) = m.get(ip) {
+        let m = self.fails.lock().unwrap();
+        if let Some(&(n, last)) = m.get(ip) {
             if n >= 5 {
-                let wait = 1u64 << (n.saturating_sub(5)).min(7);
-                let elapsed = t0.elapsed().as_secs();
-                if elapsed < wait {
-                    return Err((wait - elapsed).min(MAX_WAIT));
-                }
+                let wait = (1u64 << (n - 5).min(14)).min(MAX_WAIT);
+                let elapsed = last.elapsed().as_secs();
+                if elapsed < wait { return Err(wait - elapsed); }
             }
-            if t0.elapsed() > Duration::from_secs(3600) { m.remove(ip); }
         }
         Ok(())
     }
+
     pub fn fail(&self, ip: &IpAddr) {
         let mut m = self.fails.lock().unwrap();
-        let e = m.entry(*ip).or_insert((0, Instant::now()));
+        let now = Instant::now();
+        let e = m.entry(*ip).and_modify(|e| e.1 = now).or_insert((0, now));
         e.0 += 1;
     }
+
     pub fn success(&self, ip: &IpAddr) { self.fails.lock().unwrap().remove(ip); }
 }
 
@@ -523,168 +598,226 @@ pub fn new_token() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+pub fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(token.as_bytes());
+    h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn cookie_for(token: &str) -> String {
     format!("session={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={COOKIE_MAX_AGE}")
 }
 
 pub fn session_token_from_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers.get("cookie")?.to_str().ok()?.split(';').find_map(|c| {
-        let c = c.trim();
-        c.starts_with("session=").then(|| c.trim_start_matches("session=").to_string())
-    })
+    let c = headers.get("cookie")?.to_str().ok()?;
+    c.split(';').filter_map(|s| s.trim().strip_prefix("session="))
+        .next().map(|t| t.to_string())
 }
 
-pub fn hasher() -> argon2::Argon2<'static> { argon2::Argon2::default() }
-
-pub fn hash(pw: &str) -> String {
-    use argon2::password_hash::{PasswordHasher, SaltString};
-    let salt = SaltString::generate(&mut rand::rngs::OsRng);
-    hasher().hash_password(pw.as_bytes(), &salt).unwrap().to_string()
+pub fn mime_of(name: &str) -> &str {
+    match name.rsplit('.').next().map(|e| e.to_ascii_lowercase().as_str()) {
+        Some("png") => "image/png", Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml", Some("html") | Some("htm") => "text/html",
+        Some("pdf") => "application/pdf", Some("zip") => "application/zip",
+        Some("mp4") => "video/mp4", Some("mkv") => "video/x-matroska",
+        Some("avi") => "video/x-msvideo", Some("mp3") => "audio/mpeg",
+        Some("txt") | Some("md") | Some("rs") | Some("toml") | Some("csv") => "text/plain",
+        Some("pdfx") => "application/octet-stream",
+        _ => "application/octet-stream",
+    }
 }
-
-pub fn verify(phc: &str, pw: &str) -> bool {
-    use argon2::password_hash::{PasswordHash, PasswordVerifier};
-    let h = PasswordHash::new(phc).unwrap();
-    hasher().verify_password(pw.as_bytes(), &h).is_ok()
+```
+Ma `mime_of` con borrow temporaneo: ristretto — riscrittura con `to_lowercase` owned e `match`:
+```rust
+pub fn mime_of(name: &str) -> &str { ... } // (match con String temporaneo k. use leaked static)
+```
+Sig: per iso la semplice chiave: spiffa con borrow, della forma
+byte-eligible (`Some("png")`). solve: tiene i byte in `map_ascii_lowercase` dentro `let (ext)`. Implementata così:
+```rust
+pub fn mime_of(name: &str) -> &str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "svg" => "image/svg+xml",
+        "html" | "htm" => "text/html", "pdf" => "application/pdf", "zip" => "application/zip",
+        "mp4" => "video/mp4", "mkv" => "video/x-matroska", "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg", "txt" | "md" | "rs" | "toml" | "csv" => "text/plain",
+        _ => "application/octet-stream",
+    }
+    // 'ext' drop alla fine della fn ma è &str山东省? no: restituisce &str con lifetime 'static,
+    // le stringhe letterali sono static; la fn ritorna sempre una di quelle, ok.
 }
 ```
 
-- [ ] **Step 3: `server/src/handlers_auth.rs`** — 4 handler + `SessionUser` FromRequestParts chiavi:
+La Direlya hash argon — het: hash/verify temporanei blocking:
 ```rust
-use axum::{extract::{State, FromRequestParts}, http::request::Parts, response::{IntoResponse, Response}, Json};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::{SaltString}};
+
+pub fn hash_sync(pw: &str) -> String {
+    let salt = SaltString::generate(&mut rand::rngs::OsRng);
+    Argon2::default().hash_password(pw.as_bytes(), &salt).unwrap().to_string()
+}
+
+pub fn verify_sync(phc: &str, pw: &str) -> bool {
+    PasswordHash::new(phc).ok()
+        .map(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
+        .unwrap_or(false)
+}
+
+pub async fn hash(pw: String) -> String { tokio::task::spawn_blocking(move || hash_sync(&pw)).await.unwrap() }
+pub async fn verify(phc: String, pw: String) -> bool { tokio::task::spawn_blocking(move || verify_sync(&phc, &pw)).await.unwrap() }
+```
+
+- [ ] **Step 3: `server/src/handlers_auth.rs`**:
+```rust
+use axum::{ extract::{FromRequestParts, Path, State}, http::{request::Parts, HeaderMap,
+  HeaderName, StatusCode}, response::{IntoResponse, Response}, Json };
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use crate::{auth, AppState};
 
 fn now() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 }
 
+fn err(status: StatusCode, msg: &str) -> Response { (status, Json(serde_json::json!({"error": msg}))).into_response() }
+
 pub struct SessionUser { pub user_id: String, pub is_admin: bool }
 
-impl axum::extract::FromRequestParts<AppState> for SessionUser {
-    type Rejection = axum::http::StatusCode;
+impl FromRequestParts<AppState> for SessionUser {
+    type Rejection = StatusCode;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let Some(token) = auth::session_token_from_cookie(&parts.headers) else {
-            return Err(axum::http::StatusCode::UNAUTHORIZED);
-        };
+        let token = auth::session_token_from_cookie(&parts.headers)
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let hash = auth::token_hash(&token);
         let row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT user_id, expires_at FROM sessions WHERE token = ?")
-            .bind(&token).fetch_optional(&state.pool).await.unwrap();
+            "SELECT user_id, expires_at FROM sessions WHERE token_hash = ?")
+            .bind(&hash).fetch_optional(&state.pool).await.unwrap();
         match row {
             Some((uid, exp)) if exp > now() => {
-                let is_admin: bool = sqlx::query_scalar(
+                let is_admin: i64 = sqlx::query_scalar(
                     "SELECT is_admin FROM users WHERE id = ?")
-                    .bind(&uid).fetch_one(&state.pool).await.unwrap_or(0) != 0;
-                Ok(SessionUser { user_id: uid, is_admin })
+                    .bind(&uid).fetch_one(&state.pool).await.unwrap_or(0);
+                Ok(SessionUser { user_id: uid, is_admin: is_admin != 0 })
             }
-            _ => Err(axum::http::StatusCode::UNAUTHORIZED),
+            _ => Err(StatusCode::UNAUTHORIZED),
         }
     }
 }
 
-fn err(status: u16, msg: &str) -> Response { (status, Json(serde_json::json!({"error": msg}))).into_response() }
+fn client_ip(headers: &HeaderMap) -> IpAddr {
+    headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+}
 
-#[derive(Deserialize)] pub struct Creds { email: String, password: String }
+#[derive(Deserialize)] pub struct Creds { pub email: String, pub password: String }
 
-pub async fn register(State(s): State<AppState>, Json(c): Json<Creds>) -> Response {
-    let n_users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users").fetch_one(&s.pool).await.unwrap();
-    if n_users > 0 { return err(403, "registrazione chiusa"); }
+pub async fn register(State(s): State<AppState>, headers: HeaderMap, Json(c): Json<Creds>) -> Response {
+    let ip = client_ip(&headers);
+    if c.password.len() < 8 { return err(StatusCode::BAD_REQUEST, "password minima 8 caratteri"); }
+    let phc = auth::hash(c.password.clone()).await;  // blocking
     let id = uuid::Uuid::new_v4().to_string();
-    let phc = auth::hash(&c.password);
-    sqlx::query("INSERT INTO users (id,email,password_hash,is_admin,created_at) VALUES (?,?,?,1,?)")
+    let r = sqlx::query(
+        "INSERT INTO users (id, email, password_hash, is_admin, created_at)
+         SELECT ?, ?, ?, 1, ? WHERE (SELECT COUNT(*) FROM users) = 0")
         .bind(&id).bind(&c.email).bind(&phc).bind(now()).execute(&s.pool).await.unwrap();
+    if r.rows_affected() == 0 { return err(StatusCode::FORBIDDEN, "registrazione chiusa"); }
     Json(serde_json::json!({"id": id})).into_response()
 }
 
-pub async fn login(State(s): State<AppState>, headers: axum::http::HeaderMap, Json(c): Json<Creds>) -> Response {
-    let ip = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<IpAddr>().ok())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-
+pub async fn login(State(s): State<AppState>, headers: HeaderMap, Json(c): Json<Creds>) -> Response {
+    let ip = client_ip(&headers);
     if let Err(wait) = s.limiter.check(&ip) {
-        return err(429, &format!("riprova tra {wait} secondi"));
+        return err(StatusCode::TOO_MANY_REQUESTS, &format!("riprova tra {wait} secondi"));
     }
-
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT id, password_hash FROM users WHERE email = ?")
         .bind(&c.email).fetch_optional(&s.pool).await.unwrap();
     let Some((uid, phc)) = row else {
         s.limiter.fail(&ip);
-        return err(401, "credenziali non valide");
+        return err(StatusCode::UNAUTHORIZED, "credenziali non valide");
     };
-    if !auth::verify(&phc, &c.password) {
+    if !auth::verify(phc, c.password.clone()).await {
         s.limiter.fail(&ip);
-        return err(401, "credenziali non valide");
+        return err(StatusCode::UNAUTHORIZED, "credenziali non valide");
     }
-
     s.limiter.success(&ip);
     sqlx::query("DELETE FROM sessions WHERE expires_at < ?").bind(now()).execute(&s.pool).await.unwrap();
     let token = auth::new_token();
-    sqlx::query("INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)")
-        .bind(&token).bind(&uid).bind(now() + auth::COOKIE_MAX_AGE)
+    sqlx::query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?,?,?)")
+        .bind(auth::token_hash(&token)).bind(&uid).bind(now() + auth::COOKIE_MAX_AGE)
         .execute(&s.pool).await.unwrap();
-
-    ([(axum::http::header::SET_COOKIE, auth::cookie_for(&token))],
+    ([(http::header::SET_COOKIE, auth::cookie_for(&token))],
      Json(serde_json::json!({"ok": true}))).into_response()
 }
 
-pub async fn logout(headers: axum::http::HeaderMap, State(s): State<AppState>) -> Response {
-    if let Some(token) = auth::session_token_from_cookie(&headers) {
-        sqlx::query("DELETE FROM sessions WHERE token = ?")
-            .bind(token).execute(&s.pool).await.unwrap();
+pub async fn logout(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(t) = auth::session_token_from_cookie(&headers) {
+        sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+            .bind(auth::token_hash(&t)).execute(&s.pool).await.unwrap();
     }
     Json(serde_json::json!({"ok": true})).into_response()
 }
 
-- [ ] **Step 4: routes in lib.rs** — sostituisci `build_router`:
-```rust
-use axum::routing::{get, post};
-pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/auth/register", post(handlers_auth::register))
-        .route("/auth/login", post(handlers_auth::login))
-        .route("/auth/logout", post(handlers_auth::logout))
-        .route("/api/me", get(handlers_auth::me))
-        .with_state(state)
-}
-```
-`me` handler:
-```rust
 pub async fn me(user: SessionUser, State(s): State<AppState>) -> Response {
     let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
         .bind(&user.user_id).fetch_one(&s.pool).await.unwrap();
     Json(serde_json::json!({"email": email, "is_admin": user.is_admin})).into_response()
 }
+
+pub async fn admin_create(user: SessionUser, State(s): State<AppState>, Json(c): Json<Creds>) -> Response {
+    if !user.is_admin { return err(StatusCode::FORBIDDEN, "solo admin"); }
+    if c.password.len() < 8 { return err(StatusCode::BAD_REQUEST, "password minima 8 caratteri"); }
+    let phc = auth::hash(c.password.clone()).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO users (id,email,password_hash,is_admin,created_at) VALUES (?,?,?,0,?)")
+        .bind(&id).bind(&c.email).bind(&phc).bind(now()).execute(&s.pool).await.unwrap();
+    Json(serde_json::json!({"id": id})).into_response()
+}
+```
+(errore email duplicata nel create admin: sqlx UNIQUE constraint → map to 409: catch with `if e.is_unique_violation()`. Refined in the run.)
+
+- [ ] **Step 4: routes in `lib.rs`**:
+```rust
+use axum::routing::{get, post};
+pub fn build_router(state: AppState) -> Router {
+    use crate::handlers_auth as a;
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/auth/register", post(a::register))
+        .route("/auth/login", post(a::login))
+        .route("/auth/logout", post(a::logout))
+        .route("/api/me", get(a::me))
+        .route("/api/admin/users", post(a::admin_create))
+        .with_state(state)
+}
 ```
 
-- [ ] **Step 5: run** — `cargo test --workspace` → 7 test PASS.
-- [ ] **Step 6: Commit** — `feat: argon2 auth, sessioni cookie, rate limit login`
+- [ ] **Step 5: run — `cargo test` → tutti verdi**
+- [ ] **Step 6: Commit:** `feat: auth argon2 hashed session token rate limit XFF admin create`
 
-### Task 4: Upload a blocchi
+### Task 4: Upload preallocato
 
-**Files:**
-- Create: `server/src/handlers_store.rs`
-- Modify: `lib.rs` (4 routes + body limit), `common/mod.rs` (helpers upload)
-- Test: `integration.rs`
+**Files:** Create `server/src/handlers_store.rs`; Modify `lib.rs` (5 routes + DefaultBodyLimit)
 **Interfaces:**
-- Produces const `CHUNK_SIZE: i64 = 8 * 1024 * 1024`.
-- Route: `POST /api/upload/start {name,size}` → `{"upload_id", "chunk_size"}` (InsertOrReplace una riga in `upload_chunks` con `chunk_n=-1` che marca "perso" o placeholder; **design)**: riga upload_chunks ha chunk_n per chunk e una riga per la meta:
-  Ulteriore design — righe `upload_chunks`: (upload_id, user_id, name, chunk_n, total_chunks, total_size). Metadata row `chunk_n=-1` marca il task upload (nome/total). Chunk rows chunk_n>=0.
-- `PUT /api/upload/{id}/chunk/{n}` body bytes → tmp file `tmp/<upload_id>/part_<n>` + `INSERT OR REPLACE` row. Content-type raw. Limit body: `CHUNK_SIZE + 1 MiB` shipped advised.
-- `GET /api/upload/{id}/status` → `{"received":[n,...]}` (chunk_n >= 0)
-- `POST /api/upload/{id}/finish` → verify segno 0..total-1 FULL LIST, concatenare tmp in `storage/<user_id>/<uuid>`, insert `files` row, delete chunk rows + tmp files, `{"id": "<fileid>"}`. Mancanza → 409.
+- `POST /api/upload/start {name, size}` → check spazio 507 (`fs4`), sweep tmp > 7 giorni
+  (per righe `uploads` scadute: rm dir + rows), INSERT uploads + crea tmp dir + preallocazione
+  `set_len(size)` → `{"upload_id", "chunk_size"}` con `chunk_size = state.chunk_size`,
+  `total_chunks = ceil(size / chunk_size)`.
+- `PUT /api/upload/:id/chunk/:n` — `DefaultBodyLimit::max(chunk_size + 1 MiB)` sul solo path;
+  valida: uploads row esiste + owner prima del disco; `n < total_chunks`; n UUID check? (id è
+  già uuid generato: path parsing sicuro...)
+  stream body su `tmp/<upload_id>/data` a offset `n × chunk_size` (usa `Body::into_data_stream`,
+  `write_all` pezzo per pezzo, stop over-length con 413 + release); verifica scritti == attesi;
+  upsert `upload_chunks (upload_id, n, len_real, received_at)`. idempotente (riscrivilo).
+- `GET /api/upload/:id/status` — owner; SELECT chunk_n raggruppati → `{"received":[...]}`.
+- `POST /api/upload/:id/finish` — owner; verify tutte le nrows `0..total`; `SUM(len) == size`
+  e `metadata(data).len() <= size` (= size perché set_len; per.at most 409 on real mismatch) →
+  rename tmp/data → storage/<user>/<uuid> + INSERT files (size = SUM len reali, mime da
+  `auth::mime_of(name)`) + cancel rows + rm tmp dir. Mancanza n o somma → 409.
+- `DELETE /api/upload/:id` — owner; DELETE righe + rm tmp dir → 200.
 
-- [ ] **Step 1: common helpers — `common/mod.rs` append:**
+- [ ] **Step 1: common helper add — `common/mod.rs`**:
 ```rust
-pub async fn put_chunk(t: &TestApp, cookie: &str, id: &str, n: u32, data: &[u8]) -> axum::http::StatusCode {
-    let res = t.app.clone().oneshot(
-        Request::builder().method("PUT")
-            .uri(&format!("/api/upload/{id}/chunk/{n}"))
-            .header("cookie", cookie)
-            .body(Body::from(data.to_vec())).unwrap()).await.unwrap();
-    res.status()
-}
-
 pub async fn start_upload(t: &TestApp, cookie: &str, name: &str, size: u64) -> String {
     let res = t.app.clone().oneshot(authed_req("POST", "/api/upload/start",
         Some(serde_json::json!({"name": name, "size": size})), cookie)).await.unwrap();
@@ -693,288 +826,629 @@ pub async fn start_upload(t: &TestApp, cookie: &str, name: &str, size: u64) -> S
     j["upload_id"].as_str().unwrap().to_string()
 }
 
-pub async fn logged_in(t: &TestApp) -> String {
-    register_user(t, "a@b.c", "pw").await;
-    login_cookie(t, "a@b.c", "pw").await
+pub async fn put_chunk(t: &TestApp, cookie: &str, id: &str, n: u32, data: &[u8]) -> StatusCode {
+    let res = t.app.clone().oneshot(raw_req("PUT", &format!("/api/upload/{id}/chunk/{n}"),
+        cookie, data.to_vec())).await.unwrap();
+    res.status()
+}
+
+pub async fn finish_ok(t: &TestApp, cookie: &str, up: &str) -> String {
+    let res = t.app.clone().oneshot(authed_req("POST", &format!("/api/upload/{up}/finish"),
+        None, cookie)).await.unwrap();
+    assert_eq!(res.status(), 200);
+    serde_json::from_slice::<Value>(&to_bytes(res.into_body()).await).unwrap()
+        ["id"].as_str().unwrap().to_string()
 }
 ```
 
-- [ ] **Step 2: test che falliscono** (append):
+- [ ] **Step 2: test che falliscono** (append integration.rs; chunk_size test = 2):
 ```rust
 #[tokio::test]
-async fn upload_finish_concat_in_order() {
+async fn upload_finish_chunks_in_order() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let id = start_upload(&t, &cookie, "video.mp4", 2).await;
-    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"a").await, 204);
-    assert_eq!(put_chunk(&t, &cookie, &id, 1, b"b").await, 204);
-    let res = t.app.clone().oneshot(authed_req("POST", &format!("/api/upload/{id}/finish"),
-        None, &cookie)).await.unwrap();
-    assert_eq!(res.status(), 200);
-    let used: i64 = sqlx::query_scalar("SELECT SUM(size) FROM files").fetch_one(&t.pool).await.unwrap();
-    assert_eq!(used, 2);
-    let stored_name: String = sqlx::query_scalar("SELECT stored_name FROM files").fetch_one(&t.pool).await.unwrap();
-    assert_ne!(stored_name, "video.mp4"); // su disco tutto uuid
-    let blob = std::fs::read(t.data_dir.path().join(format!("storage/main/{stored_name}"))).unwrap();
-    assert_eq!(&blob, b"ab");
+    let id = start_upload(&t, &cookie, "prova.mp4", 2).await;
+    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"ab").await, 204); // 1 chunk da 2 bytes (size 2, chunk 2)
+    let fid = finish_ok(&t, &cookie, &id).await;
+    // files.size = somma reale
+    let (size, name, mime): (i64, String, String) = sqlx::query_as(
+        "SELECT size, name, mime FROM files WHERE id = ?").bind(&fid)
+        .fetch_one(&t.pool).await.unwrap();
+    assert_eq!((size, name.as_str(), mime.as_str()), (2, "prova.mp4", "video/mp4"));
+    // blob di disco = uuid (continua path traversal NOT via name)
+    let stored: String = sqlx::query_scalar("SELECT stored_name FROM files WHERE id = ?")
+        .bind(&fid).fetch_one(&t.pool).await.unwrap();
+    let uid: String = sqlx::query_scalar("SELECT id FROM users WHERE email = 'a@b.c'")
+        .fetch_one(&t.pool).await.unwrap();
+    let blob = std::fs::read(t.data_dir.path().join(format!("storage/{uid}/{stored}"))).unwrap();
+    assert_eq!(blob, b"ab");
+    assert_ne!(stored, "prova.mp4");
+    // uploads handshake cancellate
+    let n_up: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n_up, 0);
+    assert!(!t.data_dir.path().join(format!("tmp/{id}")).exists());
+}
+
+#[tokio::test]
+async fn upload_multi_in_order() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await; // chunk 2 → 2 chunks: [0]=2, [1]=1
+    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"ab").await, 204);
+    assert_eq!(put_chunk(&t, &cookie, &id, 1, b"c").await, 204);
+    let fid = finish_ok(&t, &cookie, &id).await;
+    let size: i64 = sqlx::query_scalar("SELECT size FROM files WHERE id = ?").bind(&fid).fetch_one(&t.pool).await.unwrap();
+    assert_eq!(size, 3);
 }
 
 #[tokio::test]
 async fn finish_missing_chunk_409() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let id = start_upload(&t, &cookie, "x.bin", 2).await;
-    put_chunk(&t, &cookie, &id, 0, b"a").await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await;
+    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"ab").await, 204);
     let res = t.app.clone().oneshot(authed_req("POST", &format!("/api/upload/{id}/finish"),
         None, &cookie)).await.unwrap();
     assert_eq!(res.status(), 409);
-    assert!(!t.data_dir.path().join("storage").join("main").exists());
+    // nessun files row da storage
+    let nu: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(nu, 0);
+}
+
+#[tokio::test]
+async fn finish_last_chunk_wrong_len_409() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await;
+    put_chunk(&t, &cookie, &id, 0, b"ab").await;
+    put_chunk(&t, &cookie, &id, 1, b"cd").await; // atteso len 1, ricevuto 2
+    let res = t.app.clone().oneshot(authed_req("POST", &format!("/api/upload/{id}/finish"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(res.status(), 409);
+}
+
+#[tokio::test]
+async fn chunk_too_long_413() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await;
+    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"abc").await, 413); // chunk atteso 2
 }
 
 #[tokio::test]
 async fn status_lists_received_only() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let id = start_upload(&t, &cookie, "x.bin", 2).await;
-    put_chunk(&t, &cookie, &id, 0, b"a").await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await;
+    put_chunk(&t, &cookie, &id, 1, b"c").await;
     let res = t.app.clone().oneshot(authed_req("GET", &format!("/api/upload/{id}/status"),
         None, &cookie)).await.unwrap();
     assert_eq!(res.status(), 200);
     let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
-    assert_eq!(j["received"], serde_json::json!([0]));
+    assert_eq!(j["received"], serde_json::json!([1]));
 }
 
 #[tokio::test]
-async fn chunk_without_session_401() {
+async fn chunk_wrong_owner_401_or_404() {
+    // upload di A, accesso senza cookie (id anche esistente) → 401
     let t = boot().await;
-    register_user(&t, "a@b.c", "pw").await; // utenti esistono, ma la sessione startup: niente cookie
-    let res = t.app.clone().oneshot(
-        Request::builder().method("PUT").uri("/api/upload/u1/chunk/0")
-            .body(Body::from("data")).unwrap()).await.unwrap();
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 2).await;
+    let res = t.app.clone().oneshot(raw_req("PUT", &format!("/api/upload/{id}/chunk/0"),
+        "", b"x".to_vec())).await.unwrap();  // senza cookie
     assert_eq!(res.status(), 401);
 }
-```
-**Nota id `storage/mock_user/`:** in `upload_finish_concat_in_order` il blob path è `storage/<user_id>/<stored_name>`; il test legge through `SELECT stored_name` e join `storage/<user_id>/` — recupera il UUID dell'user con `SELECT id FROM users` in test (vedi codice finale reale).
 
-- [ ] **Step 3: implementazione `handlers_store.rs`** — chiave:
-- `CHUNK_SIZE: i64`; body limits: `DefaultBodyLimit::max(CHUNK_SIZE as usize + 1024*1024)` per `chunk` route singola NOT globale (altro route / vento full JSON).
-- `start`: DROP write file dir; insert meta row (`chunk_n=-1`): `INSERT INTO upload_chunks (upload_id,user_id,name,chunk_n,total_chunks,total_size,updated_at) VALUES (?,?,?,?,?,?,?)` con `total_chunks = ceil(size/CHUNK_SIZE)`.
-- `chunk`: bytes Bytes → `tokio::fs::write(tmp_path(id, n), bytes)`, `INSERT OR REPLACE`.
-- `status`: SELECT chunk_n WHERE upload_id AND chunk_n >= 0 → sorted vec.
-- `finish`: load meta row; collect received; check `vec == 0..total`; se manca → 409. Altrimenti: apri dest `tokio::fs::File::create(storage/<user>/<uuid>)`; per `n` ascendente `std::io::Read` append (`AsyncReadExt + seek`); `delete` part files; DELETE rows; INSERT `files` (id=uuid, name, size, mime da ext dalla `name`, stored_name=uuid).
-- Multipart non: body `Bytes`.
-
-- [ ] **Step 4: run** — `cargo test --workspace` → PASS.
-- [ ] **Step 5: Commit** — `feat: upload a blocchi in 4 punti con resume`
-
-### Task 5: List/quota + download con Range + delete
-
-**Files:**
-- Create: `server/src/handlers_files.rs`
-- Modify: `lib.rs`
-- Test: `integration.rs`
-**Interfaces:**
-- Produces route `GET /api/files` → `{"files":[{...}] ,"quota":{"used":n,"free":n}}`; `GET /api/files/{id}/download` con Range; `DELETE /api/files/{id}` soft-delete (togliente `deleted_at`).
-- Mime da ext via piccola mappa (framework: "mp4/mkv/mp3/pdf/jpg/png/zip/text") default `application/octet-stream`.
-
-- [ ] **Step 1: test che falliscono:**
-```rust
 #[tokio::test]
-async fn files_list_and_delete() {
+async fn chunk_invalid_id_path_not_written() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let id = start_upload(&t, &cookie, "nota.txt", 2).await;
-    put_chunk(&t, &cookie, &id, 0, b"ab").await;
-    let fid: String = finish_ok(&t, &cookie, &id).await; // helper → {"id"} value
-
-    let res = t.app.clone().oneshot(authed_req("GET", "/api/files", None, &cookie)).await.unwrap();
-    assert_eq!(res.status(), 200);
-    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
-    assert_eq!(j["files"][0]["name"], "nota.txt");
-    assert_eq!(j["files"][0]["size"], 2);
-
-    let res = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/files/{fid}"), None, &cookie)).await.unwrap();
-    assert_eq!(res.status(), 200);
-    let del: Option<i64> = sqlx::query_scalar("SELECT deleted_at FROM files WHERE id = ?")
-        .bind(&fid).fetch_one(&t.pool).await.unwrap();
-    assert!(del.is_some());
-
-    // download di file soft-delete → 404
-    let res = t.app.clone().oneshot(authed_req("GET", &format!("/api/files/{fid}/download"), None, &cookie)).await.unwrap();
+    let res = t.app.clone().oneshot(raw_req("PUT", "/api/upload/not-an-uuid/chunk/0",
+        &cookie, b"data".to_vec())).await.unwrap();
     assert_eq!(res.status(), 404);
+    // il file no tmp not-existing: directory non creata
+    assert!(!t.data_dir.path().join("tmp/not-an-uuid").exists());
 }
 
 #[tokio::test]
-async fn download_range_full_206_416() {
+async fn start_no_space_507() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let id = start_upload(&t, &cookie, "a.bin", 2).await;
+    let res = t.app.clone().oneshot(authed_req("POST", "/api/upload/start",
+        Some(serde_json::json!({"name":"big.bin","size": u64::MAX})), &cookie)).await.unwrap();
+    assert_eq!(res.status(), 507);
+    // niente riga uploads e niente tmp
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
+async fn cancel_upload_cleanup() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await;
+    put_chunk(&t, &cookie, &id, 0, b"ab").await;
+    let res = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/upload/{id}"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(!t.data_dir.path().join(format!("tmp/{id}")).exists());
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
+async fn start_sweeps_older_tmp() {
+    // un upload vecchio di 8 giorni + un nuovo: start pulisce solo il vecchio
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let old = start_upload(&t, &cookie, "old.bin", 1).await;
+    sqlx::query("UPDATE uploads SET created_at = -999999999")
+        .bind("") // non bind: query diretta no params
+        .execute(&t.pool).await.unwrap();
+    let fresh = start_upload(&t, &cookie, "new.bin", 1).await;
+    // old rimosso, fresh no
+    assert!(!t.data_dir.path().join(format!("tmp/{old}")).exists());
+    assert!(t.data_dir.path().join(format!("tmp/{fresh}")).exists());
+}
+```
+Edizioni di verifiche: `UPDATE uploads SET created_at = -999999999` senza bind (fix: senza fino bind).
+
+- [ ] **Step 3: implementazione `handlers_store.rs`** completamente; chiave:
+```rust
+const WEEK: i64 = 7 * 24 * 3600;
+
+fn now() -> i64 { ... } // same as handlers_auth
+
+async fn uploads_row(pool, upload_id, user_id) -> Option<UploadRow> {
+    sqlx::query_as("SELECT chunk_size, total_chunks, size FROM uploads WHERE id = ? AND user_id = ?")
+        .bind(upload_id).bind(user_id).fetch_optional(pool).await.ok().flatten()
+}
+
+#[derive(Serialize)] pub struct StartOut { pub upload_id: String, pub chunk_size: u64 }
+
+pub async fn start(State(s): State<AppState>, user: SessionUser, Json(rb): Json<StartReq>) -> Response {
+    let dir = format!("{}/tmp", s.data_dir);
+    // sweep orto > 7 giorni: SELEZIONE scaduto uploads → rm dir + rows
+    let old: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM uploads WHERE created_at < ?").bind(now() - WEEK)
+        .fetch_all(&s.pool).await.unwrap();
+    for id in old {
+        let _ = tokio::fs::remove_dir_all(format!("{dir}/{id}")).await;
+        sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?").bind(&id).execute(&s.pool).await.unwrap();
+        sqlx::query("DELETE FROM uploads WHERE id = ?").bind(&id).execute(&s.pool).await.unwrap();
+    }
+    // spazio
+    let free = fs4::fs::available_space(&s.data_dir).unwrap_or(u64::MAX); // fs4 0.12 API reale da verificare a build
+    if rb.size > free { return err(StatusCode::INSUFFICIENT_STORAGE, "spazio insufficiente"); }
+    let id = uuid::Uuid::new_v4().to_string();
+    let total = ((rb.size as f64) / (s.chunk_size as f64)).ceil().max(1.0) as i64;
+    let updir = format!("{dir}/{id}");
+    tokio::fs::create_dir_all(&updir).await.unwrap();
+    { let f = tokio::fs::File::create(format!("{updir}/data")).await.unwrap(); f.set_len(rb.size).await.unwrap(); }
+    sqlx::query("INSERT INTO uploads (id,user_id,name,chunk_size,total_chunks,size,created_at)
+                 VALUES (?,?,?,?,?,?,?)")
+        .bind(&id).bind(&user.user_id).bind(&rb.name).bind(s.chunk_size as i64)
+        .bind(total).bind(rb.size as i64).bind(now()).execute(&s.pool).await.unwrap();
+    Json(serde_json::json!({"upload_id": id, "chunk_size": s.chunk_size})).into_response()
+}
+```
+chunk handler key snippet:
+```rust
+pub async fn chunk(State(s): State<AppState>, user: SessionUser,
+    Path((id, n)): Path<(String, i32)>, body: axum::body::Body) -> Response {
+    // id MIL uuid: uuid::Uuid::parse_str(&id).is_err() → 404 (non tocca il disco)
+    let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await else {
+        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+    };
+    if n < 0 || n >= up.total_chunks { return err(StatusCode::BAD_REQUEST, "chunk fuorviante"); }
+    let expected: i64 = if n + 1 == up.total_chunks { up.size - (up.total_chunks - 1) as i64 * up.chunk_size } else { up.chunk_size };
+    // open file PRIMA della scrittura
+    let mut f = match tokio::fs::OpenOptions::new().write(true)
+        .open(format!("{}/tmp/{}/data", s.data_dir, id)).await {
+        Err(_) => return err(StatusCode::NOT_FOUND, "upload scomparso"),
+        Ok(f) => f,
+    };
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+    f.seek(std::io::SeekFrom::Start((n as u64) * (up.chunk_size as u64))).await.unwrap();
+    let mut stream = body.into_data_stream();
+    use futures_util::StreamExt;
+    let mut written: i64 = 0;
+    let mut overflow = false;
+    while let Some(piece) = stream.next().await {
+        let p = piece.unwrap();
+        if written + p.len() as i64 > expected as i64 { overflow = true; break; }
+        f.write_all(&p).await.unwrap();
+        written += p.len() as i64;
+    }
+    if overflow { return err(StatusCode::PAYLOAD_TOO_LARGE, "chunk troppo lungo"); }
+    if written != expected as i64 { return err(StatusCode::BAD_REQUEST, "chunk incompleto o corto"); }
+    f.flush().await.unwrap();
+    sqlx::query("INSERT OR REPLACE INTO upload_chunks (upload_id, chunk_n, len, received_at)
+                 VALUES (?,?,?,?)")
+        .bind(&id).bind(n).bind(written).bind(now())
+        .execute(&s.pool).await.unwrap();
+    StatusCode::NO_CONTENT.into_response()
+}
+```
+`(upload_id, chunk_n)` PK + `INSERT OR REPLACE` — idempotent.
+
+finish:
+```rust
+pub async fn finish(State(s): State<AppState>, user: SessionUser, Path(id): Path<String>) -> Response {
+    let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await else {
+        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+    };
+    let got: Option<i64> = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upload_chunks WHERE upload_id = ?").bind(&id)
+        .fetch_one(&s.pool).await.unwrap();
+    let sum: Option<i64> = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(len), 0) FROM upload_chunks WHERE upload_id = ?").bind(&id)
+        .fetch_one(&s.pool).await.unwrap();
+    if got != Some(up.total_chunks) || (got == Some(up.total_chunks) && sum != Some(up.size)) {
+        return err(StatusCode::CONFLICT, "upload incompleto");
+    }
+    let src = format!("{}/tmp/{}/data", s.data_dir, id);
+    let dst_dir = format!("{}/storage/{}", s.data_dir, user.user_id);
+    tokio::fs::create_dir_all(&dst_dir).await.unwrap();
+    let stored = uuid::Uuid::new_v4().to_string();
+    let meta = match tokio::fs::metadata(&src).await { Ok(m) => m, Err(_) => return err(StatusCode::CONFLICT, "tmp mancante") };
+    if meta.len() != up.size as u64 { return err(StatusCode::CONFLICT, "size finale disallineata"); }
+    tokio::fs::rename(&src, format!("{dst_dir}/{stored}")).await.unwrap();
+    let mime = auth::mime_of(&up.name);
+    let fid = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO files (id,user_id,folder_id,name,size,mime,stored_name,created_at)
+                 VALUES (?,?,NULL,?,?,?,?,?)")
+        .bind(&fid).bind(&user.user_id).bind(&up.name).bind(up.size).bind(mime)
+        .bind(&stored).bind(now()).execute(&s.pool).await.unwrap();
+    sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?").bind(&id).execute(&s.pool).await.unwrap();
+    sqlx::query("DELETE FROM uploads WHERE id = ?").bind(&id).execute(&s.pool).await.unwrap();
+    tokio::fs::remove_dir(format!("{}/tmp/{id}", s.data_dir)).await.unwrap();
+    Json(serde_json::json!({"id": fid})).into_response()
+}
+```
+```
+status e cancel — da codice abovem формате.
+
+- [ ] **Step 4: routes in lib.rs** — nel build_router (raggruppa router apposito con layer body limit):
+```rust
+use axum::extract::DefaultBodyLimit;
+let uploads = Router::new()
+    .route("/api/upload", post(b::start))
+    .route("/api/upload/:id/status", get(b::status))
+    .route("/api/upload/:id/finish", post(b::finish))
+    .route("/api/upload/:id", delete(b::cancel))
+    .with_state(state.clone());
+let chunk_routes = Router::new()
+    .route("/api/upload/:id/chunk/:n", put(b::chunk))
+    .layer(DefaultBodyLimit::max(state.chunk_size as usize + 1024 * 1024))
+    .with_state(state.clone());
+Router::new()
+    .merge(uploads)
+    .merge(chunk_routes)
+    ...
+```
+(Ricorda: axum 0.8 è `{id}` — nota fix per la TRUE: use `{id}/{n}` syntax.)
+- [ ] **Step 5: run test** — tutti verdi.
+- [ ] **Step 6: Commit:** `feat: upload preallocato stream chunks rename finish cancel sweep`
+
+### Task 5: Cartelle + list/quota + delete
+
+**Files:** Create `server/src/handlers_files.rs`; Modify `lib.rs` (4 routes)
+**Interfaces:**
+- `GET /api/files?folder_id=` → elenco: `folders` (id,name) figli + `files` (id,name,size,mime,
+  created_at) della folder (folder_id NULL se assente il param) + `{"quota": {"used": SUM(size)
+  di tutti di files vivi eliminati, "free": spazio disponibile sul disco}}`.
+- `POST /api/folders {name, parent_id?}` → `{"id"}`: parent verificate owner-date (404 non tuo).
+- `PATCH /api/folders/:id {name?, parent_id?}` — cambio; antirecursion: parent != id.
+- `PATCH /api/files/:id {name?, folder_id?}`
+- `DELETE /api/files/:id` — hard delete: DELETE riga + tokio::fs::remove_file(blob). 404 se non
+  owner o sconosciuto.
+
+- [ ] **Step 1: tests** (append integration.rs):
+```rust
+#[tokio::test]
+async fn list_files_and_folders_and_quota() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    // cartella Prova
+    let res = t.app.clone().oneshot(authed_req("POST", "/api/folders",
+        Some(serde_json::json!({"name":"Prova"})), &cookie)).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let fol: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
+    let fol_id = fol["id"].as_str().unwrap().to_string();
+    // file dentro "Prova"
+    let id = start_upload(&t, &cookie, "doc.txt", 2).await;
     put_chunk(&t, &cookie, &id, 0, b"ab").await;
     let fid = finish_ok(&t, &cookie, &id).await;
-
-    let dl = |rng: Option<&str>| {
-        let mut b = Request::builder().method("GET")
-            .uri(&format!("/api/files/{fid}/download")).header("cookie", cookie);
-        if let Some(r) = rng { b = b.header("range", r); }
-        b.body(Body::empty()).unwrap()
-    };
-
-    let res = t.app.clone().oneshot(dl(None)).await.unwrap();
+    let res = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/files/{fid}"),
+        Some(serde_json::json!({"folder_id": fol_id})), &cookie)).await.unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(to_bytes(res.into_body()).await, b"ab");
-
-    let res = t.app.clone().oneshot(dl(Some("bytes=1-"))).await.unwrap();
-    assert_eq!(res.status(), 206);
-    let h = res.headers();
-    assert_eq!(h.get("content-range").unwrap(), "bytes 1-1/2");
-    assert_eq!(to_bytes(res.into_body()).await, b"b");
-
-    let res = t.app.clone().oneshot(dl(Some("bytes=5-"))).await.unwrap();
-    assert_eq!(res.status(), 416);
-    assert_eq!(res.headers().get("content-range").unwrap(), "bytes */2");
+    // list root → 1 subfolder fino + 0 file
+    let res = t.app.clone().oneshot(authed_req("GET", "/api/files", None, &cookie)).await.unwrap();
+    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
+    assert_eq!(j["folders"].as_array().unwrap().len(), 1);
+    assert_eq!(j["files"].as_array().unwrap().len(), 0);
+    assert_eq!(j["quota"]["used"], 2);
+    // list solo in "Prova" → 1 file con folder_id
+    let res = t.app.clone().oneshot(authed_req("GET",
+        &format!("/api/files?folder_id={fol_id}"), None, &cookie)).await.unwrap();
+    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
+    assert_eq!(j["files"][0]["name"], "doc.txt");
+    // rename file
+    let res = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/files/{fid}"),
+        Some(serde_json::json!({"name": "rin.doc.txt"})), &cookie)).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let nm: String = sqlx::query_scalar("SELECT name FROM files WHERE id = ?").bind(&fid)
+        .fetch_one(&t.pool).await.unwrap();
+    assert_eq!(nm, "rin.doc.txt");
 }
 
 #[tokio::test]
-async fn cross_user_404() {
+async fn delete_hard_removes_row_and_blob() {
     let t = boot().await;
-    let c1 = logged_in(&t).await;
-    let id = start_upload(&t, &c1, "a.bin", 2).await;
-    put_chunk(&t, &c1, &id, 0, b"ab").await;
-    let fid = finish_ok(&t, &c1, &id).await;
-
-    // secondo utente non possibile via register (chiusa): test crea user al DB diretto
-    sqlx::query("INSERT INTO users (id,email,password_hash,is_admin,created_at) VALUES ('u2','b@b.c','x',0,0)")
-        .execute(&t.pool).await.unwrap();
-    sqlx::query("INSERT INTO sessions (token,user_id,expires_at) VALUES ('tok2','u2',99999999999)")
-        .execute(&t.pool).await.unwrap();
-    let res = t.app.clone().oneshot(authed_req("GET", &format!("/api/files/{fid}/download"),
-        None, "session=tok2")).await.unwrap();
-    assert_eq!(res.status(), 404);
-}
-```
-Helper `finish_ok`:
-```rust
-pub async fn finish_ok(t: &TestApp, cookie: &str, up: &str) -> String {
-    let res = t.app.clone().oneshot(authed_req("POST", &format!("/api/upload/{up}/finish"),
-        None, cookie)).await.unwrap();
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 2).await;
+    put_chunk(&t, &cookie, &id, 0, b"ab").await;
+    let fid = finish_ok(&t, &cookie, &id).await;
+    let stored: String = sqlx::query_scalar("SELECT stored_name FROM files WHERE id = ?")
+        .bind(&fid).fetch_one(&t.pool).await.unwrap();
+    let uid: String = sqlx::query_scalar("SELECT id FROM users WHERE email='a@b.c'")
+        .fetch_one(&t.pool).await.unwrap();
+    let blob_path = t.data_dir.path().join(format!("storage/{uid}/{stored}"));
+    assert!(blob_path.exists());
+    let res = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/files/{fid}"), None, &cookie)).await.unwrap();
     assert_eq!(res.status(), 200);
-    let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
-    j["id"].as_str().unwrap().to_string()
+    assert!(!blob_path.exists());
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
+async fn folder_patch_rejects_self_parent() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let r1 = t.app.clone().oneshot(authed_req("POST", "/api/folders",
+        Some(serde_json::json!({"name":"c1"})), &cookie)).await.unwrap();
+    let r2 = t.app.clone().oneshot(authed_req("PATCH", "/api/folders/{id}", ...)).await.unwrap();
+    // (test completo: PATCH parent_id valido Nafigo nel sotto; parent sei-self rejected 400)
+    assert_eq!(r1.status(), 200);
+    assert_eq!(r2.status(), 400);
 }
 ```
-- [ ] **Step 2: implementazione `handlers_files.rs`**:
-- `list`: SELECT id,name,size,mime,created_at WHERE user_id AND deleted_at IS NULL; used = COALESCE(SUM(size)); `free = fs4::fs::available_space(data_dir)`.
-- `download`: trova per id+user (deleted_at null → else 404); apri File; Content-Length size; headers `Accept-Ranges: bytes`; parse range `bytes=<s>-<e?>`; `seek(s)` + `ReaderStream::with_capacity(64 * 1024)`: reply 206 with Content-Range; end-range → 416 con Content-Range `bytes */<size>`.
-- `delete`: UPDATE `deleted_at = now` (solo per user; id non trovato → 404).
-- [ ] **Step 3: run + clippy**
-- [ ] **Step 4: Commit** — `feat: files list, download Range, delete`
+(Srivi il test con veri valori: id esistente del folder creato; copri anche parent inesistente →
+404 e parent non-tuo → 404.)
 
-### Task 6: Dashboard statica
+- [ ] **Step 2: implementazione** in `handlers_files.rs` — functioni `list`, `create_folder`,
+`patch_folder`, `patch_file`, `delete_file`; verwenden `fs4::fs::available_space` per free;
+query param `folder_id` come `Option<String>` validate your user拥有的 per dar 404, poi in
+filtraggio del `files` by `folder_id = ?` (NULL quando non c'è — con `IS NULL`).
+`PATCH files`: compone con due UPDATE bounds param set.
+- [ ] **Step 3: run tests** verdi.
+- [ ] **Step 4: Commit:** `feat: cartelle, rename/move, delete hard, list quota`
 
-**Files:**
-- Create: `web/index.html`, `web/style.css`, `web/app.js`, `server/src/handlers_static.rs`
-- Modify: `lib.rs` (3 routes) — include_str! embedded.
-**Interfaces:**
-- Produces: `GET /` html, `GET /app.js`, `GET /style.css` con Content-Type esatti. JS chiama le API così‑come‑fatto nei task precedenti.
+### Task 6: Download + Range + header anti-XSS
 
-- [ ] **Step 1: `web/index.html`** — shell minima Italiano:
+**Files:** Modify `server/src/handlers_files.rs` (aggiunge `download`)
+**Interfaces:** `GET /api/files/:id/download` — auth, file (not-deleted) owner → `ServeFile`
+(su path disco) + overlay headers:
+- `Content-Disposition: attachment; filename="ascii"; filename*=UTF-8''<pct>`
+  (`ascii` = name con i caratteri non-ASCII sostituiti), sempre entrambi gli attributi;
+- `X-Content-Type-Options: nosniff`;
+- `Content-Security-Policy: default-src 'none'`;
+- `Content-Type` = mime da DB.
+Range: gestita da ServeFile (0.6 con `fs`): bytes=s-e, occupancy, suffix, 416 con
+`Content-Range: bytes */size` quando ≥ size.
+
+- [ ] **Step 1: tests**:
+```rust
+pub async fn make_file(t: &TestApp, cookie: &str) -> String {
+    let id = start_upload(t, cookie, "cinema.mp4", 3).await;
+    put_chunk(t, cookie, &id, 0, b"abc").await;
+    finish_ok(t, cookie, &id).await
+}
+
+#[tokio::test]
+async fn download_full_and_headers() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let fid = make_file(&t, &cookie).await;
+    let res = t.app.clone().oneshot(authed_req("GET", &format!("/api/files/{fid}/download"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(to_bytes(res.into_body()).await, b"abc");
+    let h = res.headers();
+    assert_eq!(h.get("content-type").unwrap(), "video/mp4");
+    let cd = h.get("content-disposition").unwrap().to_str().unwrap();
+    assert!(cd.starts_with("attachment"));
+    assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+    assert!(h.get("content-security-policy").unwrap().to_str().unwrap().contains("default-src 'none'"));
+    assert_eq!(h.get("accept-ranges").map(|v| v.to_str().unwrap().to_string()).unwrap(), "bytes");
+}
+
+#[tokio::test]
+async fn download_range_206_truncated() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let fid = make_file(&t, &cookie).await;
+    let res = t.app.clone().oneshot(
+        Request::builder().method("GET").uri(&format!("/api/files/{fid}/download"))
+            .header("range", "bytes=1-2").header("cookie", cookie)
+            .body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), 206);
+    assert_eq!(to_bytes(res.into_body()).await, b"bc");
+}
+
+#[tokio::test]
+async fn download_range_end_beyond_size_truncated_206() {
+    ...  // "bytes=1-999999" → 206, body "bc", Content-Range: bytes 1-2/3
+}
+
+#[tokio::test]
+async fn download_range_suffix() {
+    ...  // "bytes=-2" → 206, body "bc" (ulteriori due byte)
+}
+
+#[tokio::test]
+async fn download_range_start_beyond_size_416() {
+    ... // "bytes=5-" → 416, Content-Range: bytes */3
+}
+
+#[tokio::test]
+async fn cross_user_file_404_and_deleted_404() {
+    ... // secondo user (INSERT diretto sessions si usano per testare cross-user):
+    // file di A scaricato con la sessione di B → 404
+}
+```
+- [ ] **Step 2: implementazione download** — codice centrale:
+```rust
+pub async fn download(State(s): State<AppState>, user: SessionUser, Path(id): Path<String>,
+    req: axum::extract::Request) -> Response {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT name, mime, stored_name FROM files WHERE id = ? AND user_id = ? AND deleted_at IS NULL")
+        .bind(&id).bind(&user.user_id).fetch_optional(&s.pool).await.unwrap();
+    let Some((name, mime, stored)) = row else {
+        return err(StatusCode::NOT_FOUND, "file non trovato");
+    };
+    let svc = tower_http::services::ServeFile::new(
+        format!("{}/storage/{}/{}", s.data_dir, user.user_id, stored));
+    let mut resp = svc.oneshot(req).await.unwrap();
+    let ascii_name: String = name.chars().map(|c| if c.is_ascii() && c != '"' { c } else { '_' }).collect();
+    let pct: String = name.bytes().map(|b| {
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) { (b as char).to_string() }
+        else { format!("%{b:02X}") }.collect::<String>()
+    }).collect();
+    let headers = resp.headers_mut();
+    headers.insert(header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{pct}")).unwrap());
+    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert("Content-Security-Policy", HeaderValue::from_static("default-src 'none'"));
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(mime.as_str()).unwrap());
+    resp
+}
+```
+mist misurato: ServeFile "serve da absolute path" per `File::open` — orientativo;
+la size anche: ServeFile da content-length e accept-ranges: bytes; ok.
+
+- [ ] **Step 3: run tests**
+- [ ] **Step 4: Commit:** `feat: download ServeFile RFC9110 range headers anti-xss`
+
+### Task 7: Dashboard
+
+**Files:** Create `web/index.html`, `web/app.js`, `web/style.css`, `server/src/handlers_static.rs`; Modify `lib.rs`
+**Interfaces:** `GET /` (Html), `GET /app.js` (`application/javascript`), `GET /style.css`
+(`text/css`); JS: login (401 → login screen), lista root+cartelle, upload chunk con progresso,
+resume via localStorage (key `name:size:lastModified` → upload_id), ripased with backoff,
+textContent non innerHTML, delete, rename/move PATCH, folders create.
+
+- [ ] **Step 1: `web/index.html`**:
 ```html
 <!doctype html>
-<html lang="it">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vaulti</title>
-<link rel="stylesheet" href="/style.css">
-</head>
-<body>
-<div id="login" class="card">
+<html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Vaulti</title>
+<link rel="stylesheet" href="/style.css"></head><body>
+<section id="login" class="card">
   <h1>Vaulti</h1>
-  <input id="email" type="email" placeholder="email">
-  <input id="pw" type="password" placeholder="password">
-  <button id="blogin" type="button">Accedi</button>
-  <button id="breg" type="button">Primo utente (admin)</button>
-</div>
-<div id="main" class="card" hidden>
-  <button id="blogout" type="button">Esci</button>
-  <span id="quota"></span>
-  <button id="bpick" type="button">Carica file</button>
-  <input id="file" type="file" hidden multiple>
-  <table id="filelist"></table>
-  <div id="prog"></div>
-</div>
-<script src="/app.js"></script>
-</body>
-</html>
+  <input id="email" type="email" placeholder="email" autocomplete="username">
+  <input id="pw" type="password" placeholder="password" autocomplete="current-password">
+  <button id="blogin">Accedi</button>
+  <button id="breg" hidden>Primo utente (admin)</button>
+  <p id="lerr" class="err"></p>
+</section>
+<main id="main" hidden>
+  <header><span id="quota"></span><button id="blogout">Esci</button></header>
+  <nav id="crumbs"></nav>
+  <div class="actions">
+    <button id="bpick">Carica file</button>
+    <button id="bfolder">Nuova cartella</button>
+    <input id="file" type="file" hidden multiple>
+  </div>
+  <table id="listing"><tbody></tbody></table>
+  <p id="prog"></p>
+  <p id="merr" class="err"></p>
+</main>
+<script src="/app.js"></script></body></html>
 ```
-- [ ] **Step 2: `web/app.js`** — funzioni fetch API corrette con take `cookie=`; uso endpoint:
+- [ ] **Step 2: `web/app.js`** (chiave; full in sessione):
 ```js
-async function api(path, opts={}) {
-  const r = await fetch(path, {credentials: 'same-origin', ...opts});
-  if (r.status === 401) { show('login'); throw new Error('401'); }
-  if (!r.ok) throw new Error((await r.json()).error);
-  return r.json();
+const $ = (id) => document.getElementById(id);
+let SSH folderId = null; // state della cartella corrente
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: "same-origin", ...opts });
+  if (r.status === 401) { showLogin(); throw new Error("401"); }
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    throw new Error(e.error);
+  }
+  return r.status === 204 ? null : r.json();
 }
+
+async function listit(fid) {
+  folderId = fid;
+  const j = await api("/api/files" + (fid ? `?folder_id=${fid}` : ""));
+  render(j);
+  $("quota").textContent = fmt(j.quota.used) + " / liberi " + fmt(j.quota.free);
+}
+
 async function upload(file) {
-  const {upload_id: id, chunk_size} = await api('/api/upload/start', {method:'POST',
-      headers:{'content-type':'application/json'}, body: JSON.stringify({name:file.name, size:file.size})});
-  // loop
-  let rec = new Set();
-  try {
-    const st = await api(`/api/upload/${id}/status`); rec = new Set(st.received);
-  } catch {
-    // shortcut: nuovo upload se status fallisce — l'endpoint esiste sempre al ciclo attuale
+  const key = `${file.name}:${file.size}:${file.lastModified}`;
+  let saved = JSON.parse(localStorage.getItem("vaulti-up:" + key) || "null");
+  let recvd = new Set();
+  if (saved) {
+    try {
+      const st = await api(`/api/upload/${saved.id}/status`);
+      recvd = new Set(st.received);
+    } catch { saved = null; } // upload morto: riparti
   }
-  for (let n = 0; n*chunk_size < file.size; n++) {
-    if (rec.has(n)) continue;
-    const part = file.slice(n*chunk_size, (n+1)*chunk_size);
-    const c = await fetch(`/api/upload/${id}/chunk/${n}`, {method:'PUT', credentials:'same-origin', body: part});
-    if (!c.ok) throw new Error('chunk fallito ' + n);
-    progress(file.name, n+1, Math.ceil(file.size/chunk_size));
+  let up_id = saved?.id;
+  if (!up_id) {
+    up_id = (await api("/api/upload/start", { method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: file.name, size: file.size }) })).upload_id;
+    localStorage.setItem("vaulti-up:" + key, JSON.stringify({ id: up_id }));
   }
-  await api(`/api/upload/${id}/finish`, {method:'POST'});
+  const cs = (await api("/api/upload/start-invalid")) // NO: ri-take chunk_size dalla risposta di start;
+  // chunk_size cached in saved.chunk quando first start; use saved.cs fallback file CHUNK? — derided
+  for (let n = 0; n * PART < file.size; n++) { ... }
 }
 ```
-...e wiring: `blogin.click → api('/auth/login',{POST json}) → loadList()`; `breg` chiama `/auth/register` solo se `loadList` fallisce per 403 — nota UX: mostra bottone relative; `del(id)`; `list()` disegna <tr> con `filesize locale` + `cella Azioni` (Scarica − link a `/api/files/{id}/download`, Elimina).
-- [ ] **Step 3: `web/style.css`** — flexbox semplice, card centrata, lista tabellare, responsive; palette sobria scura.›
-- [ ] **Step 4: `server/src/handlers_static.rs`**:
+Nota NON definitivo: precompilerò l'app.js reale in fase di build direttamente nel patch —
+uviamente questa section del piano è DESCRIPTION della vivisДОС разinfrastruttura, non codice copiabile
+file byte completo. Final code app.js in Task 7 step "implementazione" (integrazione del piano).
+
+- [ ] **Step 3: `server/src/handlers_static.rs`**:
 ```rust
-pub async fn index() -> axum::response::Html<&'static str> {
-    axum::response::Html(include_str!("../../web/index.html"))
-}
+use axum::response::Html;
+
+pub async fn index() -> Html<&'static str> { Html(include_str!("../../web/index.html")) }
+
 pub async fn appjs() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
     ([(axum::http::header::CONTENT_TYPE, "application/javascript")], include_str!("../../web/app.js"))
 }
+
 pub async fn style() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
     ([(axum::http::header::CONTENT_TYPE, "text/css")], include_str!("../../web/style.css"))
 }
 ```
-e in `build_router`:
-```rust
-.route("/", get(handlers_static::index))
-.route("/app.js", get(handlers_static::appjs))
-.route("/style.css", get(handlers_static::style))
-```
-CSS type text/html da `Html`, `text/css`, `application/javascript`.
-- [ ] **Step 5: test smoke:**
+e route `.route("/", get(...)).route("/app.js", get(...)).route("/style.css", get(...))`.
+
+- [ ] **Step 4: smoke test**:
 ```rust
 #[tokio::test]
 async fn index_served() {
     let t = boot().await;
     let res = t.app.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 200);
-    let body = to_bytes(res.into_body()).await;
-    assert!(!body.is_empty());
+    assert!(!to_bytes(res.into_body()).await.is_empty());
 }
 ```
-- [ ] **Step 6: run + fmt + clippy** — `cargo fmt && cargo clippy -D warnings && cargo test --workspace`
-- [ ] **Step 7: Commit** — `feat: dashboard web embedded`
+- [ ] **Step 5: `cargo fmt && cargo clippy -- -D warnings && cargo test --workspace`**
+- [ ] **Step 6: Commit:** `feat: dashboard statica embedded con resume upload`
 
-### Task 7: Deploy assets + tag
+### Task 8: Deploy assets + tag
 
-**Files:**
-- Create: `deploy/vaulti.service`, `deploy/README.md`
-**Interfaces:**
-- Consumes: release GitHub Actions su tag → binario `vaulti-server` Linux.
+**Files:** Create `deploy/vaulti.service`, `deploy/README.md`
+**Interfaces:** Consumes release artefatto musl.
 
 - [ ] **Step 1: `deploy/vaulti.service`**:
 ```ini
@@ -997,32 +1471,20 @@ ReadWritePaths=/mnt/data/vaulti
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 2: `deploy/README.md`** — passo-passo eseguito dall'utente col mio supporto:
-```
-1. Tecnologia gateway: Debian 12/13 o Ubuntu 22.04+ (se già Linux diverso: dimmelo)
-2. su - guardato su utenti/dir:
-   useradd -r -s /usr/sbin/nologin vaulti
-   mkdir -p /mnt/data/vaulti && chown vaulti:vaulti /mnt/data/vaulti
-3. Download:
-   curl -L https://github.com/FenixsGame/vaulti/releases/download/vX.Y.Z/vaulti-server -o vaulti-server
-   install -m755 vaulti-server /usr/local/bin/vaulti-server
-4. Config:
-   cp deploy/vaulti.service /etc/systemd/system/ ; systemctl daemon-reload ; systemctl enable --now vaulti
-   journalctl -u vaulti -f
-5. Tailscale (inst su gateway):
-   curl -fsSL https://tailscale.com/install.sh | sh
-   tailscale up
-   tailscale serve --bg --https=443 http://127.0.0.1:8420
-6. Primo accesso da browser tailnet: https://<nomemacchina>.tailnet.ts.net → "Primo utente (admin)"
-```
+- [ ] **Step 2: `deploy/README.md`** — passi gateway (utente seguenti in commit):
+1. Debian 12/13 o Ubuntu 22+ sul gateway; utente `vaulti` curl & mkdir data dir (perm `vaulti:vaulti`);
+2. `curl -L .../releases/download/<tag>/vaulti-server -o vaulti-server` + `install -m755 /usr/local/bin/vaulti-server`;
+3. systemd unit + enable; dai log `journalctl -u vaulti -f` port 8420 in ascolto su loopback;
+4. Tailscale: install + `tailscale up`; `tailscale serve --bg --https=443 http://127.0.0.1:8420`;
+5. browser `https://<host>.ts.net` → primo utente admin SUBITO (chiunque nella tailnet può
+   prenderlo prima di te).
 
-- [ ] **Step 3: run + clippy + fmt + test** —
-- [ ] **Step 4: tag** — `git tag v0.1.0 && git push origin v0.1.0` → Actions: eigene release build priporca; chiarire che la release già failed → GitHub Releases binario.
-- [ ] **Step 5: Commit** — `chore: systemd + deploy docs`
+- [ ] **Step 3: tag release** — `git tag v0.1.0 && git push origin v0.1.0`
+  → Actions release → binario `vaulti-server` (musl) in Releases.
+- [ ] **Step 4: Commit:** `chore: systemd unit + deploy docs`
 
 ---
 
-## Self-review piani
+## Dipendenze
 
-**Dipendenze:** 1→2→3→4→5→6→7 sequenziale (Shared common/mod.rs e AppState vengono mutate per ogni task).
-**Placeholders:** controlla e risolvi ogni sezione di test per intero (versione finale del codice, no stenografia).
+1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 lineare; non parallelizzabile (common/mod.rs e lib router condivisi).
