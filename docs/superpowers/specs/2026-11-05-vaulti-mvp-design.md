@@ -21,11 +21,12 @@ desktop, senza backup.
 - Sessioni: token casuale 256 bit. Nel DB si salva solo lo **hash SHA-256** del token (crate
   `sha2`): dal DB non si risale al cookie. Cookie: `session=<token>; HttpOnly; Secure;
   SameSite=Lax; Path=/; Max-Age=2592000` (30 giorni).
-- Rate limit login: contatore in memoria. Chiave = primo elemento di `X-Forwarded-For` (dietro
-  `tailscale serve` ogni richiesta arriva da `127.0.0.1`, quindi XFF è l'unica verità; è
-  affidabile solo perché ascoltiamo su loopback). Regola: dopo 5 falliti, attesa `2^(n-5)`
-  secondi con limite 60; `last_fail` aggiornato a ogni fallito (il buco del brute-force lento
-  resta chiuso); reset dopo 1 h senza falliti o al successo.
+- Rate limit login: contatore in memoria. Chiave = **ultimo elemento** di `X-Forwarded-For`
+  (quello aggiunto dal proxy fidato; il primo dell'header è falsificabile e il brute-force lo
+  cambia a ogni tentativo) + un secondo contatore **per email**. Regola: dopo 5 falliti, attesa
+  `2^(n-5)` secondi con limite 60; `last_fail` aggiornato a ogni fallito (il buco del
+  brute-force lento resta chiuso); reset dopo 1 h senza falliti o al successo. L'orologio è
+  **iniettabile** (closure `now()`), i test simulano il tempo senza sleep.
 - Registrazione chiusa e atomica: un solo statement
   `INSERT INTO users(...) SELECT ... WHERE (SELECT COUNT(*) FROM users) = 0` — rows_affected 0
   → 403. Niente race tra due richieste. Primo utente = admin. Subito dopo il deploy chiunque
@@ -36,6 +37,12 @@ desktop, senza backup.
   `n × chunk_size`. `finish` verifica bytes ricevuti == size e poi fa `rename` verso
   `storage/<user_id>/<uuid>`. Zero copie di dati, idempotente (riscrivere lo stesso chunk
   riscrive i stessi offset).
+- Casi limite upload: file da **0 byte** → `total_chunks = 0`, `finish` con zero righe
+  `upload_chunks` accettato (somma 0 == size). La riga `upload_chunks` viene inserita **solo
+  dopo** la verifica della lunghezza esatta del chunk: un chunk interrotto non risulta mai
+  ricevuto. Prima del `rename` finale: `sync_all` del file. Lo sweep di `start` cancella
+  directory + righe di `uploads` e di `upload_chunks` (**tutte**, non solo quelle vecchie
+  quell'upload).
 - Validazione upload: l'upload_id è un UUID generato dal server; il chunk non tocca il disco
   prima di aver verificato che l'upload esista e appartenga alla sessione; `n < total_chunks`;
   lunghezza del body limitata (`DefaultBodyLimit` sulla sola route chunk). Ogni riga
@@ -51,14 +58,31 @@ desktop, senza backup.
 - Cancel e abbandonati: `DELETE /api/upload/:id` (solo owner) rimuove righe + tmp; ogni `start`
   fa sweep dei `tmp/*` più vecchi di 7 giorni.
 - Spazio: `start` risponde 507 se `available_space(data_dir) < size` (crate `fs4`).
-- Cartelle nel modello da subito (niente migrazioni dopo): `folders(id, user_id, parent_id NULL,
-  name, created_at)` + `files.folder_id NULL` (NULL = radice). Endpoint: `POST /api/folders`,
-  `PATCH /api/folders/:id`, `PATCH /api/files/:id` (rinominare/spostare), `GET
-  /api/files?folder_id=`. La prima UI è piatta, il modello no.
+- Cartelle nel modello da subito (niente migrazioni dopo): `folders(id, user_id,
+  parent_id NULL, name, created_at)` + `files.folder_id NULL` (NULL = radice). Endpoint:
+  `POST /api/folders`, `PATCH /api/folders/:id`, `DELETE /api/folders/:id` (solo se vuota:
+  file o subfolder dentro → 409), `PATCH /api/files/:id` (rinomina/sposta), `GET
+  /api/files?folder_id=`. Anti-ciclo allo spostamento: il nuovo parent non può essere la
+  cartella stessa o un suo discendente (caminhante su `parent_id`). Nomi duplicati
+  vietati: `UNIQUE(user_id, parent_key, name)` con `parent_key` = colonna generata
+  `COALESCE(parent_id, '\<root\>')`; duplicato → 409 "nome già in uso". (Nelle stringhe SQL
+  il letterale della radice è `!root!` per evitare escape.)
 - Delete: **hard delete** (DELETE riga + `remove_file` blob). Scelta consapevole: senza backup
   l'hard delete è irreversibile; il soft delete senza purge non libererebbe mai spazio.
   Cestino + purge = fase B.
 - SQLite: WAL + busy_timeout 5 s; `users.email UNIQUE COLLATE NOCASE`.
+- CSRF/Origin: le route che modificano dati (POST/PATCH/DELETE) rifiutano richieste con header
+  `Origin` diverso dall'`Host` della richiesta (con SameSite=Lax, altre macchine della tailnet
+  potrebbero risultare same-site: la verifica esplicita chiude il caso).
+- Cambio password di emergenza: subcommand CLI `vaulti-server reset-password <email> <nuova>`
+  da eseguire come `vaulti` sul gateway (funziona anche se il DB è al buio: aggiorna hash
+  argon2 + invalida tutte le sessioni di quell'utente).
+- Filesystem del disco dati: deve essere **ext4, XFS o btrfs locale** (mai NTFS/exFAT/SMB:
+  WAL e rename atomico ne risentono). `tmp/` e `storage/` vivono sotto la stessa `VAULTI_DATA_DIR`
+  (stessa mount point). Verifica nel deploy README.
+- `files.deleted_at` resta nello schema per la fase B (cestino con purge); l'MVP non lo usa.
+- Anteprime inline di file (immagini/video/PDF): fase B, route separata con allowlist di mime
+  (mai HTML/SVG). Il download attuale attachment-only copre l'MVP.
 - Fuori dall'MVP: trash/cestino, versioni dei file, 2FA, condivisione, quote per utente, backup
   (rischio noto e accettato: disco muore = file muoiono), app mobile, sync automatico.
 - Build: GitHub Actions (rustup installato sul PC con l'assistente per girare i test in locale);
@@ -79,6 +103,9 @@ desktop, senza backup.
 
 - `tailscale serve https / proxy http://127.0.0.1:8420` fornisce HTTPS dentro la tailnet.
 - La dashboard è servita da axum stesso: `include_str!` dei 3 file.
+- Percorsi: il **default nel codice** è `/srv/vaulti` (override `VAULTI_DATA_DIR`); il deploy
+  usa il disco dati reale, quindi il systemd unit imposta `VAULTI_DATA_DIR=/mnt/data/vaulti`.
+  Vale il §2 sul filesystem (ext4/XFS/btrfs, tmp e storage stessa mount).
 
 ## 4. Modello dati
 
@@ -112,7 +139,8 @@ upload_chunks (upload_id TEXT NOT NULL REFERENCES uploads(id), chunk_n INTEGER N
 | `POST /api/admin/users` | admin-only: crea un altro utente |
 | `GET /api/files?folder_id=` | file + sottocartelle della cartella; quota `{used, free}` |
 | `POST /api/folders` | `{name, parent_id?}` → `{"id"}` |
-| `PATCH /api/folders/:id` | `{name?, parent_id?}` rinoma/sposta |
+| `PATCH /api/folders/:id` | `{name?, parent_id?}` rinoma/sposta (anti-ciclo) |
+| `DELETE /api/folders/:id` | solo se vuota (file o subfolder dentro → 409) |
 | `PATCH /api/files/:id` | `{name?, folder_id?}` rinoma/sposta |
 | `POST /api/upload/start` | `{name,size}`; check spazio; preallocazione → `{"upload_id","chunk_size"}` |
 | `PUT /api/upload/:id/chunk/:n` | body stream su tmp a offset; valida owner+n+len; 204 |
@@ -138,11 +166,13 @@ Errori JSON `{error}`: 401 sessione, 403, 409, 416 range, 507 spazio.
 
 ## 7. Build e deployment
 
-- `rust-toolchain.toml`: channel `1.99.1` con `components = ["clippy", "rustfmt"]`.
+- `rust-toolchain.toml`: channel `1.99.1` (esiste: rustc locale la usa) con
+  `components = ["clippy", "rustfmt"]`, `targets = ["x86_64-unknown-linux-musl"]`.
 - `.github/workflows/ci.yml` su push (main) e su `tags: ['v*']`:
   `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`.
 - Tag `v*` → job release: `cargo build --release --target x86_64-unknown-linux-musl`
-  (cli `musl-tools` sul runner) → GitHub Releases `vaulti-server-linux-musl`.
+  (runner `musl-tools`), copia con nome fisso `vaulti-server-linux-musl` e upload su
+  GitHub Releases; il curl del README usa esattamente quello stesso nome.
 - Gateway: useradd `vaulti`, dati in `/mnt/data/vaulti` (+ conf systemd in `deploy/vaulti.service`),
   download binario da Releases, `tailscale serve --bg --https=443 http://127.0.0.1:8420`,
   prima registrazione browser → admin.

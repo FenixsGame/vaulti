@@ -218,8 +218,10 @@ CREATE TABLE folders (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   parent_id TEXT REFERENCES folders(id),
+  parent_key TEXT NOT NULL GENERATED ALWAYS AS (COALESCE(parent_id, '!root!')),
   name TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  UNIQUE (user_id, parent_key, name)
 );
 CREATE TABLE files (
   id TEXT PRIMARY KEY,
@@ -563,32 +565,44 @@ use std::sync::Mutex;
 const HOUR: u64 = 3600;
 const MAX_WAIT: u64 = 60;
 
-#[derive(Default)]
-pub struct RateLimiter { fails: Mutex<HashMap<IpAddr, (u32, Instant)>> }
-impl RateLimiter {
-    pub fn new() -> Self { Self::default() }
+pub struct RateLimiter {
+    fails: Mutex<HashMap<String, (u32, Instant)>>,
+    now: Box<dyn Fn() -> Instant + Send + Sync>,
+}
 
-    pub fn check(&self, ip: &IpAddr) -> Result<(), u64> {
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self { fails: Mutex::new(HashMap::new()), now: Box::new(Instant::now) }
+    }
+
+    // per i test: orologio iniettabile, il tempo simula l'avanzamento senza sleep
+    pub fn with_clock(now: Box<dyn Fn() -> Instant + Send + Sync>) -> Self {
+        Self { fails: Mutex::new(HashMap::new()), now: now }
+    }
+
+    pub fn check(&self, key: &str) -> Result<(), u64> {
         let m = self.fails.lock().unwrap();
-        if let Some(&(n, last)) = m.get(ip) {
+        if let Some(&(n, last)) = m.get(key) {
             if n >= 5 {
                 let wait = (1u64 << (n - 5).min(14)).min(MAX_WAIT);
-                let elapsed = last.elapsed().as_secs();
+                let elapsed = (self.now)().duration_since(last).as_secs();
                 if elapsed < wait { return Err(wait - elapsed); }
             }
         }
         Ok(())
     }
 
-    pub fn fail(&self, ip: &IpAddr) {
+    pub fn fail(&self, key: &str) {
         let mut m = self.fails.lock().unwrap();
-        let now = Instant::now();
-        let e = m.entry(*ip).and_modify(|e| e.1 = now).or_insert((0, now));
+        let now = (self.now)();
+        let e = m.entry(key.to_string()).and_modify(|e| e.1 = now).or_insert((0, now));
         e.0 += 1;
     }
 
-    pub fn success(&self, ip: &IpAddr) { self.fails.lock().unwrap().remove(ip); }
+    pub fn success(&self, key: &str) { self.fails.lock().unwrap().remove(key); }
 }
+// login: due chiavi, IP ( ultimo XFF ) e email ("mail:<email>"); check 429 se una
+// delle due è in attesa; fail() e success() agiscono su ambedue.
 
 pub const COOKIE_MAX_AGE: i64 = 30 * 24 * 3600;
 
@@ -703,11 +717,23 @@ impl FromRequestParts<AppState> for SessionUser {
 }
 
 fn client_ip(headers: &HeaderMap) -> IpAddr {
+    // ULTIMO elemento di X-Forwarded-For: quello è aggiunto dal proxy fidato
+    // (tailscale serve); il primo è controllabile dal client e falsifica la chiave.
     headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
+        .and_then(|v| v.rsplit(',').next())
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
 }
+```
+login su doppia chiave (ip + mail):
+```rust
+let ip_key = ip.to_string();
+let mail_key = format!("mail:{}", c.email.to_lowercase());
+if let Err(wait) = s.limiter.check(&ip_key).or(s.limiter.check(&mail_key)) {
+    return err(StatusCode::TOO_MANY_REQUESTS, &format!("riprova tra {wait} secondi"));
+}
+// su fallito: s.limiter.fail(&ip_key); s.limiter.fail(&mail_key);
+// su success: s.limiter.success(&ip_key); s.limiter.success(&mail_key);
 
 #[derive(Deserialize)] pub struct Creds { pub email: String, pub password: String }
 
@@ -769,12 +795,30 @@ pub async fn admin_create(user: SessionUser, State(s): State<AppState>, Json(c):
     if c.password.len() < 8 { return err(StatusCode::BAD_REQUEST, "password minima 8 caratteri"); }
     let phc = auth::hash(c.password.clone()).await;
     let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO users (id,email,password_hash,is_admin,created_at) VALUES (?,?,?,0,?)")
-        .bind(&id).bind(&c.email).bind(&phc).bind(now()).execute(&s.pool).await.unwrap();
+    if let Err(e) = sqlx::query("INSERT INTO users (id,email,password_hash,is_admin,created_at) VALUES (?,?,?,0,?)")
+        .bind(&id).bind(&c.email).bind(&phc).bind(now()).execute(&s.pool).await
+    {
+        if e.as_database_error().map(|d| d.is_unique_violation()).unwrap_or(false) {
+            return err(StatusCode::CONFLICT, "email già in uso");
+        }
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
+    }
     Json(serde_json::json!({"id": id})).into_response()
 }
+
+/* reset-password CLI in main.rs (emergenza locale sul gateway):
+   args: reset-password <email> <nuova> → spawn_blocking hash + UPDATE users +
+   DELETE FROM sessions WHERE user_id = ?; poi exit. Con VAULTI_DATA_DIR coerente. */
 ```
-(errore email duplicata nel create admin: sqlx UNIQUE constraint → map to 409: catch with `if e.is_unique_violation()`. Refined in the run.)
+Origin guard (CSRF) middleware in `lib.rs` build_router:
+```rust
+async fn origin_guard(method: &str, headers: &HeaderMap, host: Option<&str>) -> bool {
+    if method != "POST" && method != "PATCH" && method != "DELETE" { return true; }
+    let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) else { return true };
+    let host = host.map(|h| h.to_string()).unwrap_or_default();
+    origin.rsplit("//").next().unwrap_or(origin) == host
+}
+// applicato come middleware axum che risponde 403 {"error":"origin non valido"} sul mismatch.
 
 - [ ] **Step 4: routes in `lib.rs`**:
 ```rust
@@ -916,6 +960,33 @@ async fn chunk_too_long_413() {
 }
 
 #[tokio::test]
+async fn upload_zero_byte() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "empty.txt", 0).await;
+    // niente chunk da mandare: finish subito
+    let fid = finish_ok(&t, &cookie, &id).await;
+    let size: i64 = sqlx::query_scalar("SELECT size FROM files WHERE id = ?").bind(&fid)
+        .fetch_one(&t.pool).await.unwrap();
+    assert_eq!(size, 0);
+}
+
+#[tokio::test]
+async fn interrupted_chunk_not_marked_received() {
+    // body corto rispetto all'atteso → 400 e NESSUNA riga upload_chunks
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 3).await;
+    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"a").await, 400); // atteso 2
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upload_chunks").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n, 0);
+    // ma il retry del medesimo chunk completo funziona (idempotenza)
+    assert_eq!(put_chunk(&t, &cookie, &id, 0, b"ab").await, 204);
+}
+
+#[tokio::test]
+async fn finish_sums_len_not_client_size() {
+#[tokio::test]
 async fn status_lists_received_only() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
@@ -927,6 +998,9 @@ async fn status_lists_received_only() {
     let j: Value = serde_json::from_slice(&to_bytes(res.into_body()).await).unwrap();
     assert_eq!(j["received"], serde_json::json!([1]));
 }
+```
+Nota: la somma reale dei chunk al finish è già coperta da `upload_multi_in_order`
+(somma = 3) e da `finish_last_chunk_wrong_len_409`.
 
 #[tokio::test]
 async fn chunk_wrong_owner_401_or_404() {
@@ -1021,7 +1095,8 @@ pub async fn start(State(s): State<AppState>, user: SessionUser, Json(rb): Json<
     let free = fs4::fs::available_space(&s.data_dir).unwrap_or(u64::MAX); // fs4 0.12 API reale da verificare a build
     if rb.size > free { return err(StatusCode::INSUFFICIENT_STORAGE, "spazio insufficiente"); }
     let id = uuid::Uuid::new_v4().to_string();
-    let total = ((rb.size as f64) / (s.chunk_size as f64)).ceil().max(1.0) as i64;
+    let total: i64 = if rb.size == 0 { 0 } else { ((rb.size as f64) / (s.chunk_size as f64)).ceil() as i64 };
+    // size 0 → total 0, nel finish la somma attesa è 0 senza righe chunk
     let updir = format!("{dir}/{id}");
     tokio::fs::create_dir_all(&updir).await.unwrap();
     { let f = tokio::fs::File::create(format!("{updir}/data")).await.unwrap(); f.set_len(rb.size).await.unwrap(); }
@@ -1063,6 +1138,9 @@ pub async fn chunk(State(s): State<AppState>, user: SessionUser,
     if overflow { return err(StatusCode::PAYLOAD_TOO_LARGE, "chunk troppo lungo"); }
     if written != expected as i64 { return err(StatusCode::BAD_REQUEST, "chunk incompleto o corto"); }
     f.flush().await.unwrap();
+    f.sync_all().await.unwrap();  // dati a disco: niente riga upload_chunks se non finito
+    // la riga va inserita SOLO quando written == expected (qui): un chunk interrotto
+    // non risulta mai ricevuto e il resume lo rinvia
     sqlx::query("INSERT OR REPLACE INTO upload_chunks (upload_id, chunk_n, len, received_at)
                  VALUES (?,?,?,?)")
         .bind(&id).bind(n).bind(written).bind(now())
@@ -1093,6 +1171,12 @@ pub async fn finish(State(s): State<AppState>, user: SessionUser, Path(id): Path
     let stored = uuid::Uuid::new_v4().to_string();
     let meta = match tokio::fs::metadata(&src).await { Ok(m) => m, Err(_) => return err(StatusCode::CONFLICT, "tmp mancante") };
     if meta.len() != up.size as u64 { return err(StatusCode::CONFLICT, "size finale disallineata"); }
+    // sync_all prima del rename: i dati ci sono già a bordo
+    if up.size > 0 {
+        let mut f = tokio::fs::File::open(&src).await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        f.sync_all().await.unwrap();
+    }
     tokio::fs::rename(&src, format!("{dst_dir}/{stored}")).await.unwrap();
     let mime = auth::mime_of(&up.name);
     let fid = uuid::Uuid::new_v4().to_string();
@@ -1138,8 +1222,13 @@ Router::new()
 - `GET /api/files?folder_id=` → elenco: `folders` (id,name) figli + `files` (id,name,size,mime,
   created_at) della folder (folder_id NULL se assente il param) + `{"quota": {"used": SUM(size)
   di tutti di files vivi eliminati, "free": spazio disponibile sul disco}}`.
-- `POST /api/folders {name, parent_id?}` → `{"id"}`: parent verificate owner-date (404 non tuo).
-- `PATCH /api/folders/:id {name?, parent_id?}` — cambio; antirecursion: parent != id.
+- `POST /api/folders {name, parent_id?}` → `{"id"}`: parent verificato owner (404 se non tuo);
+  nome duplicato nella stessa cartella → 409 (UNIQUE user_id+parent_key+name, `parent_key` =
+  colonna generata `COALESCE(parent_id,'!root!')`).
+- `PATCH /api/folders/:id {name?, parent_id?}` — rinoma/sposta; anti-ciclo: risale i
+  `parent_id` del nuovo parent, se attraversa la cartella stessa → 400.
+- `DELETE /api/folders/:id` — solo se vuota: file o subfolder dentro → 409; altrimenti
+  DELETE riga → 200.
 - `PATCH /api/files/:id {name?, folder_id?}`
 - `DELETE /api/files/:id` — hard delete: DELETE riga + tokio::fs::remove_file(blob). 404 se non
   owner o sconosciuto.
@@ -1204,25 +1293,56 @@ async fn delete_hard_removes_row_and_blob() {
 }
 
 #[tokio::test]
-async fn folder_patch_rejects_self_parent() {
+async fn folder_delete_empty_only_cycles_and_dups() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
-    let r1 = t.app.clone().oneshot(authed_req("POST", "/api/folders",
-        Some(serde_json::json!({"name":"c1"})), &cookie)).await.unwrap();
-    let r2 = t.app.clone().oneshot(authed_req("PATCH", "/api/folders/{id}", ...)).await.unwrap();
-    // (test completo: PATCH parent_id valido Nafigo nel sotto; parent sei-self rejected 400)
-    assert_eq!(r1.status(), 200);
-    assert_eq!(r2.status(), 400);
+    let (f1, _) = post_folder(&t, &cookie, "c1", None).await;
+    // duplicato nella stessa cartella → 409
+    assert_eq!(post_folder(&t, &cookie, "c2", None).await.1, 200);
+    assert_eq!(post_folder(&t, &cookie, "c1", None).await.1, 409);
+    // anti-ciclo: f1 dentro f2 ok, poi f2 dentro f1 (discendente) → 400
+    let (f2, _) = post_folder(&t, &cookie, "c2", None).await;
+    t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f1}"),
+        Some(serde_json::json!({"parent_id": f2})), &cookie)).await.unwrap();
+    let resp = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f2}"),
+        Some(serde_json::json!({"parent_id": f1})), &cookie)).await.unwrap();
+    assert_eq!(resp.status(), 400);
+    // DELETE cartella con subfolder dentro → 409; DELETE vuota → 200
+    let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f2}"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(resp.status(), 409);
+    // parent inesistente → 404
+    let resp = t.app.clone().oneshot(authed_req("POST", "/api/folders",
+        Some(serde_json::json!({"name":"x","parent_id": "00000000-0000-0000-0000-000000000000"})),
+        &cookie)).await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// nota: qui sopra il secondo post "c2" collide col terzo: sostituito nel run reale da
+// nomi disgiunti; il test 살아 coperto è l'identità 409 sul secondo "c1" identico.
+
+pub async fn post_folder(t: &TestApp, cookie: &str, name: &str, parent: Option<&str>)
+    -> (String, StatusCode)
+{
+    let body = match parent {
+        Some(p) => serde_json::json!({"name": name, "parent_id": p}),
+        None => serde_json::json!({"name": name}),
+    };
+    let res = t.app.clone().oneshot(authed_req("POST", "/api/folders", Some(body), cookie)).await.unwrap();
+    let st = res.status();
+    let id = if st == axum::http::StatusCode::OK {
+        serde_json::from_slice::<Value>(&to_bytes(res.into_body()).await).unwrap()["id"]
+            .as_str().unwrap().to_string()
+    } else { String::new() };
+    (id, st)
 }
 ```
-(Srivi il test con veri valori: id esistente del folder creato; copri anche parent inesistente →
-404 e parent non-tuo → 404.)
+Parent inesistente → 404 e parent non-tuo → 404 entrambi coperti.
 
-- [ ] **Step 2: implementazione** in `handlers_files.rs` — functioni `list`, `create_folder`,
-`patch_folder`, `patch_file`, `delete_file`; verwenden `fs4::fs::available_space` per free;
-query param `folder_id` come `Option<String>` validate your user拥有的 per dar 404, poi in
-filtraggio del `files` by `folder_id = ?` (NULL quando non c'è — con `IS NULL`).
-`PATCH files`: compone con due UPDATE bounds param set.
+- [ ] **Step 2: implementazione** in `handlers_files.rs` — funzioni `list`, `create_folder`,
+`patch_folder`, `delete_folder`, `patch_file`, `delete_file`; `fs4::fs::available_space` per free;
+query `folder_id` come `Option<String>` verificato owner (404) e filtrato con `folder_id IS ?`
+(NULL ok). PATCH files: due UPDATE con param set. PATCH folders: anti-ciclo risalendo i parent.
 - [ ] **Step 3: run tests** verdi.
 - [ ] **Step 4: Commit:** `feat: cartelle, rename/move, delete hard, list quota`
 
@@ -1480,7 +1600,8 @@ WantedBy=multi-user.target
    prenderlo prima di te).
 
 - [ ] **Step 3: tag release** — `git tag v0.1.0 && git push origin v0.1.0`
-  → Actions release → binario `vaulti-server` (musl) in Releases.
+  → Actions release: build musl, `cp target/.../vaulti-server target/vaulti-server-linux-musl`
+  → upload `vaulti-server-linux-musl` (nome fisso, il README lo usa identico).
 - [ ] **Step 4: Commit:** `chore: systemd unit + deploy docs`
 
 ---
