@@ -498,6 +498,7 @@ async fn start_no_space_507() {
     let cookie = logged_in(&t).await;
     let res = t
         .app
+        .clone()
         .oneshot(authed_req(
             "POST",
             "/api/upload/start",
