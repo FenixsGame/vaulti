@@ -4,6 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use tower::ServiceExt;
 
 use crate::{AppState, handlers_auth::SessionUser};
 
