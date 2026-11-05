@@ -60,6 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/upload/{id}/finish", post(u::finish))
         .route("/api/upload/{id}", delete(u::cancel))
         .route("/api/files", get(f::list))
+        .route("/api/files/{id}/download", get(f::download))
         .route(
             "/api/files/{id}",
             patch(f::patch_file).delete(f::delete_file),

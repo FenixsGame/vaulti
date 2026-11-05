@@ -1,8 +1,8 @@
 use serde::Deserialize;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{StatusCode, header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 
 use crate::{AppState, handlers_auth::SessionUser};
@@ -289,4 +289,57 @@ pub async fn delete_file(
     // hard delete del blob: se manca già non è un errore
     let _ = tokio::fs::remove_file(format!("{}/storage/{}/{}", s.data_dir, uid, stored)).await;
     Json(serde_json::json!({"ok": true})).into_response()
+}
+
+pub async fn download(
+    State(s): State<AppState>,
+    user: SessionUser,
+    Path(id): Path<String>,
+    req: Request,
+) -> Response {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT name, mime, stored_name FROM files
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
+    )
+    .bind(&id)
+    .bind(&user.user_id)
+    .fetch_optional(&s.pool)
+    .await
+    .unwrap();
+    let Some((name, mime, stored)) = row else {
+        return err(StatusCode::NOT_FOUND, "file non trovato");
+    };
+    // ServeFile gestisce Range/416/accept-ranges sui byte a disco; qui sopra solo
+    // l'owner-check: il path è derivato da stored_name di proprietà confermata
+    let svc = tower_http::services::ServeFile::new(format!(
+        "{}/storage/{}/{}",
+        s.data_dir, user.user_id, stored
+    ));
+    let mut resp = svc.oneshot(req).await.unwrap();
+    // ascii: fallback sicuro per browser senza RFC 5987; pct: RFC 9110 token bytes
+    let ascii_name: String = name
+        .chars()
+        .map(|c| if c.is_ascii() && c != '"' { c } else { '_' })
+        .collect();
+    let pct: String = name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    let cd = format!("attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{pct}");
+    let headers = resp.headers_mut();
+    headers.insert(header::CONTENT_DISPOSITION, HeaderValue::from_str(&cd).unwrap());
+    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "Content-Security-Policy",
+        HeaderValue::from_static("default-src 'none'"),
+    );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap());
+    resp
 }
