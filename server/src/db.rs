@@ -23,6 +23,6 @@ pub async fn new_pool(path: &str) -> sqlx::Result<SqlitePool> {
         .await
 }
 
-pub async fn migrate(p: &SqlitePool) -> sqlx::Result<()> {
+pub async fn migrate(p: &SqlitePool) -> Result<(), sqlx::migrate::MigrateError> {
     sqlx::migrate!("src/migrations").run(p).await
 }
