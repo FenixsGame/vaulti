@@ -70,7 +70,7 @@ pub async fn start(
             .unwrap();
     }
     // check 507: spazio libero sul disco dati
-    let free = fs4::available_space(&s.data_dir).unwrap_or(u64::MAX);
+    let free = fs4::available_space(&*s.data_dir).unwrap_or(u64::MAX);
     if rb.size > free {
         return err(StatusCode::INSUFFICIENT_STORAGE, "spazio insufficiente");
     }
