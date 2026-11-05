@@ -59,10 +59,8 @@ pub async fn list(
     Query(q): Query<ListReq>,
 ) -> Response {
     // cartella richiesta: owner check prima di qualsiasi lettura (404 se non tuo)
-    if let Some(fid) = &q.folder_id {
-        if !owns(&s.pool, &user.user_id, "folders", fid).await {
-            return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
-        }
+    if let Some(fid) = &q.folder_id && !owns(&s.pool, &user.user_id, "folders", fid).await {
+        return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
     }
     let folders: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, name FROM folders WHERE user_id = ? AND parent_id IS ? ORDER BY name",
@@ -114,10 +112,8 @@ pub async fn create_folder(
     user: SessionUser,
     Json(rb): Json<FolderReq>,
 ) -> Response {
-    if let Some(pid) = &rb.parent_id {
-        if !owns(&s.pool, &user.user_id, "folders", pid).await {
-            return err(StatusCode::NOT_FOUND, "cartella padre sconosciuta");
-        }
+    if let Some(pid) = &rb.parent_id && !owns(&s.pool, &user.user_id, "folders", pid).await {
+        return err(StatusCode::NOT_FOUND, "cartella padre sconosciuta");
     }
     let id = uuid::Uuid::new_v4().to_string();
     if let Err(e) = sqlx::query(
@@ -235,13 +231,11 @@ pub async fn patch_file(
     if !owns(&s.pool, &user.user_id, "files", &id).await {
         return err(StatusCode::NOT_FOUND, "file sconosciuto");
     }
-    if let Some(fid) = &pb.folder_id {
-        if !owns(&s.pool, &user.user_id, "folders", fid).await {
-            return err(
-                StatusCode::NOT_FOUND,
-                "cartella di destinazione sconosciuta",
-            );
-        }
+    if let Some(fid) = &pb.folder_id && !owns(&s.pool, &user.user_id, "folders", fid).await {
+        return err(
+            StatusCode::NOT_FOUND,
+            "cartella di destinazione sconosciuta",
+        );
     }
     if let Err(e) = sqlx::query(
         "UPDATE files SET name = COALESCE(?, name), folder_id = COALESCE(?, folder_id)
