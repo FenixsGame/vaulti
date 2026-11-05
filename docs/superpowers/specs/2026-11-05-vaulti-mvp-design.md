@@ -45,6 +45,10 @@ desktop, senza backup.
   ricevuto. Prima del `rename` finale: `sync_all` del file. Lo sweep di `start` cancella
   directory + righe di `uploads` e di `upload_chunks` (**tutte**, non solo quelle vecchie
   quell'upload).
+- Ordine al `finish`: l'INSERT della riga in `files` avviene **prima** del `rename` verso
+  `storage/` — il UNIQUE `user_id+folder_key+name` decide qui il 409 per nome duplicato e
+  nessun blob resta in storage senza riga; se il rename fallisce dopo l'INSERT, la riga viene
+  cancellata. Un nome già in uso chiude l'upload con pulizia completa (righe + tmp).
 - Validazione upload: l'upload_id è un UUID generato dal server; il chunk non tocca il disco
   prima di aver verificato che l'upload esista e appartenga alla sessione; `n < total_chunks`;
   lunghezza del body limitata (`DefaultBodyLimit` sulla sola route chunk). Ogni riga
@@ -80,6 +84,8 @@ desktop, senza backup.
   mismatch → 403. Da verificare con la realtà di `tailscale serve` sul gateway, il che
   avverrà durante il deploy: se Host viene a 127.0.0.1, la regola di confronto Host
   bloccherebbe tutta la dashboard.
+  Fase B (client desktop webview, Tauri): `Origin: tauri://localhost` verrebbe bloccato →
+  servirà un'eccezione esplicita (allowlist di Origin o token header dedicato).
 - Cambio password di emergenza: subcommand CLI `vaulti-server reset-password <email>`, la nuova
   password letta **da stdin** (mai in argv, resterebbe nella history della shell). Aggiorna
   hash argon2 + invalida tutte le sessioni di quell'utente.

@@ -227,12 +227,14 @@ CREATE TABLE files (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   folder_id TEXT REFERENCES folders(id),
+  folder_key TEXT NOT NULL GENERATED ALWAYS AS (COALESCE(folder_id, '!root!')),
   name TEXT NOT NULL,
   size INTEGER NOT NULL,
   mime TEXT NOT NULL,
   stored_name TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
-  deleted_at INTEGER
+  deleted_at INTEGER,
+  UNIQUE (user_id, folder_key, name)
 );
 CREATE TABLE uploads (
   id TEXT PRIMARY KEY,
@@ -1199,21 +1201,36 @@ pub async fn finish(State(s): State<AppState>, user: SessionUser, Path(id): Path
         let f = tokio::fs::File::open(&src).await.unwrap();
         f.sync_all().await.unwrap();
     }
-    tokio::fs::rename(&src, format!("{dst_dir}/{stored}")).await.unwrap();
+    // INSERT PRIMA del rename: il UNIQUE(user_id, folder_key, name) è l'arbitro del 409
+    // qui, così nessun blob finisce in storage/ senza riga (il bug fissato nel piano).
     let mime = auth::mime_of(&up.name);
     let fid = uuid::Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO files (id,user_id,folder_id,name,size,mime,stored_name,created_at)
+    if let Err(e) = sqlx::query("INSERT INTO files (id,user_id,folder_id,name,size,mime,stored_name,created_at)
                  VALUES (?,?,NULL,?,?,?,?,?)")
         .bind(&fid).bind(&user.user_id).bind(&up.name).bind(up.size).bind(mime)
-        .bind(&stored).bind(now()).execute(&s.pool).await.unwrap();
+        .bind(&stored).bind(now()).execute(&s.pool).await
+    {
+        if e.as_database_error().map(|d| d.is_unique_violation()).unwrap_or(false) {
+            // nome già in uso nella stessa cartella: upload morto, pulizia completa
+            sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?").bind(&id).execute(&s.pool).await.ok();
+            sqlx::query("DELETE FROM uploads WHERE id = ?").bind(&id).execute(&s.pool).await.ok();
+            let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir)).await;
+            return err(StatusCode::CONFLICT, "nome già in uso");
+        }
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
+    }
+    // il rename adesso: se fallisce, la riga appena inserta non deve restare (blob assente)
+    if tokio::fs::rename(&src, format!("{dst_dir}/{stored}")).await.is_err() {
+        sqlx::query("DELETE FROM files WHERE id = ?").bind(&fid).execute(&s.pool).await.ok();
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
+    }
     sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?").bind(&id).execute(&s.pool).await.unwrap();
     sqlx::query("DELETE FROM uploads WHERE id = ?").bind(&id).execute(&s.pool).await.unwrap();
     tokio::fs::remove_dir(format!("{}/tmp/{id}", s.data_dir)).await.unwrap();
     Json(serde_json::json!({"id": fid})).into_response()
 }
 ```
-```
-status e cancel — da codice abovem формате.
+status e cancel — codice speculare ai handler sopra (guardia owner + pulizia righe/tmp).
 
 - [ ] **Step 4: routes in lib.rs** — nel build_router (raggruppa router apposito con layer body limit):
 ```rust
@@ -1315,6 +1332,29 @@ async fn delete_hard_removes_row_and_blob() {
 }
 
 #[tokio::test]
+async fn finish_duplicate_name_409() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "d.bin", 2).await;
+    put_chunk(&t, &cookie, &id, 0, b"ab").await;
+    finish_ok(&t, &cookie, &id).await;
+    // secondo upload con lo stesso nome nella stessa cartella → 409 al finish
+    let id2 = start_upload(&t, &cookie, "d.bin", 2).await;
+    put_chunk(&t, &cookie, &id2, 0, b"ab").await;
+    let res = t.app.clone().oneshot(authed_req("POST", &format!("/api/upload/{id2}/finish"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(res.status(), 409);
+    // upload morto: un solo file in DB, nessun blob orfano, tmp pulito
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n, 1);
+    let u: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads").fetch_one(&t.pool).await.unwrap();
+    assert_eq!(u, 0);
+    let stored: String = sqlx::query_scalar("SELECT stored_name FROM files").fetch_one(&t.pool).await.unwrap();
+    let uid: String = sqlx::query_scalar("SELECT id FROM users WHERE email='a@b.c'").fetch_one(&t.pool).await.unwrap();
+    assert!(t.data_dir.path().join(format!("storage/{uid}/{stored}")).exists());
+}
+
+#[tokio::test]
 async fn folder_delete_empty_only_cycles_and_dups() {
     let t = boot().await;
     let cookie = logged_in(&t).await;
@@ -1322,24 +1362,35 @@ async fn folder_delete_empty_only_cycles_and_dups() {
     assert_eq!(st, 200);
     // duplicato nella stessa cartella → 409
     assert_eq!(post_folder(&t, &cookie, "c1", None).await.1, 409);
-    // stesso nome in un'altra cartella è legale
+    // stesso nome in un'altra cartella è legale: "c1" dentro f2
     let (f2, _) = post_folder(&t, &cookie, "c2", None).await;
-    let (_, sub) = post_folder(&t, &cookie, "c1b", Some(&f2)).await;
+    let (_, sub) = post_folder(&t, &cookie, "c1", Some(&f2)).await;
     assert_eq!(sub, 200);
-    // anti-ciclo: f1 dentro f2 ok, poi f2 dentro f1 (suo discendente) → 400
-    let ok = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f1}"),
+    // subfolder dentro f1: così DELETE f1 → 409 (non vuota)
+    let (_, sub1) = post_folder(&t, &cookie, "c1b", Some(&f1)).await;
+    assert_eq!(sub1, 200);
+    // anti-ciclo con f3 (f1 non può muoversi in f2: "c1" lì dentro darebbe 409 di nome):
+    // f3 dentro f2 → 200; poi f2 dentro f3 (suo discendente) → 400; self-parent → 400
+    let (f3, _) = post_folder(&t, &cookie, "c3", None).await;
+    let ok = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f3}"),
         Some(serde_json::json!({"parent_id": f2})), &cookie)).await.unwrap();
     assert_eq!(ok.status(), 200);
     let resp = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f2}"),
-        Some(serde_json::json!({"parent_id": f1})), &cookie)).await.unwrap();
+        Some(serde_json::json!({"parent_id": f3})), &cookie)).await.unwrap();
     assert_eq!(resp.status(), 400);
-    // DELETE cartella con subfolder dentro c1 → 409; DELETE vuota f2 → 200
+    let resp = t.app.clone().oneshot(authed_req("PATCH", &format!("/api/folders/{f2}"),
+        Some(serde_json::json!({"parent_id": f2})), &cookie)).await.unwrap();
+    assert_eq!(resp.status(), 400);
+    // DELETE f1 → 409 (c1b dentro); DELETE f2 → 409 (f3 dentro); DELETE f3 → 200 (vuota)
     let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f1}"),
         None, &cookie)).await.unwrap();
     assert_eq!(resp.status(), 409);
     let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f2}"),
         None, &cookie)).await.unwrap();
-    assert_eq!(resp.status(), 409); // f2 ha ancora c1 dentro
+    assert_eq!(resp.status(), 409);
+    let resp = t.app.clone().oneshot(authed_req("DELETE", &format!("/api/folders/{f3}"),
+        None, &cookie)).await.unwrap();
+    assert_eq!(resp.status(), 200);
     // parent inesistente → 404
     let resp = t.app.oneshot(authed_req("POST", "/api/folders",
         Some(serde_json::json!({"name":"x","parent_id":"00000000-0000-0000-0000-000000000000"})),
@@ -1368,7 +1419,8 @@ Parent inesistente → 404 e parent non-tuo → 404 entrambi coperti.
 - [ ] **Step 2: implementazione** in `handlers_files.rs` — funzioni `list`, `create_folder`,
 `patch_folder`, `delete_folder`, `patch_file`, `delete_file`; `fs4::fs::available_space` per free;
 query `folder_id` come `Option<String>` verificato owner (404) e filtrato con `folder_id IS ?`
-(NULL ok). PATCH files: due UPDATE con param set. PATCH folders: anti-ciclo risalendo i parent.
+(NULL ok). PATCH files: due UPDATE con param set; qui vale lo stesso UNIQUE: rinomina verso
+nome già in uso nella stessa cartella → 409. PATCH folders: anti-ciclo risalendo i parent.
 - [ ] **Step 3: run tests** verdi.
 - [ ] **Step 4: Commit:** `feat: cartelle, rename/move, delete hard, list quota`
 
