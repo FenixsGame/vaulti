@@ -1056,3 +1056,129 @@ async fn index_and_assets_served() {
         assert!(!to_bytes(res.into_body()).await.is_empty());
     }
 }
+
+#[tokio::test]
+async fn move_file_to_root_with_empty_folder_id() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let fol = post_folder(&t, &cookie, "c", None).await;
+    let fid = make_file(&t, &cookie).await;
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req(
+            "PATCH",
+            &format!("/api/files/{fid}"),
+            Some(serde_json::json!({"folder_id": fol.0})),
+            &cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req(
+            "PATCH",
+            &format!("/api/files/{fid}"),
+            Some(serde_json::json!({"folder_id": ""})),
+            &cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let f: Option<Option<String>> = sqlx::query_scalar("SELECT folder_id FROM files WHERE id = ?")
+        .bind(&fid)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert!(f.is_none());
+}
+
+#[tokio::test]
+async fn download_name_control_chars_no_panic() {
+    let t = boot().await;
+    let cookie = logged_in(&t).await;
+    let id = start_upload(&t, &cookie, "a\nb.mp4", 3).await;
+    put_chunk(&t, &cookie, &id, 0, b"ab").await;
+    put_chunk(&t, &cookie, &id, 1, b"c").await;
+    let fid = finish_ok(&t, &cookie, &id).await;
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req(
+            "GET",
+            &format!("/api/files/{fid}/download"),
+            None,
+            &cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let cd = res
+        .headers()
+        .get("content-disposition")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(cd.contains("a_b.mp4"));
+    assert!(cd.contains("attachment"));
+}
+
+#[tokio::test]
+async fn reset_password_cli_updates_hash_and_kills_sessions() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = format!("{}/vaulti.db", dir.path().to_string_lossy());
+    let pool = vaulti_server::db::new_pool(&dbp).await.unwrap();
+    vaulti_server::db::migrate(&pool).await.unwrap();
+    let uid = uuid::Uuid::new_v4().to_string();
+    let old = vaulti_server::auth::hash_sync("oldpassword");
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, is_admin, created_at) VALUES (?,?,?,?,?)",
+    )
+    .bind(&uid)
+    .bind("a@b.c")
+    .bind(&old)
+    .bind(1)
+    .bind(0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ('deadbeef', ?, 0)")
+        .bind(&uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vaulti-server"))
+        .args(["reset-password", "a@b.c"])
+        .env("VAULTI_DATA_DIR", dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"newpassword1\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (ph,): (String,) = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = ?")
+        .bind("a@b.c")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(vaulti_server::auth::verify_sync(&ph, "newpassword1"));
+    assert!(!vaulti_server::auth::verify_sync(&ph, "oldpassword"));
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = ?")
+        .bind(&uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}

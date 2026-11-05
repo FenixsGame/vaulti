@@ -6,6 +6,8 @@ pub mod handlers_files;
 pub mod handlers_static;
 pub mod handlers_store;
 
+use std::io::Read;
+
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::Request;
@@ -137,5 +139,55 @@ pub fn run() {
             .unwrap();
         println!("vaulti sul port {}", cfg.port);
         axum::serve(listener, build_router(state)).await.unwrap();
+    });
+}
+
+/// Campo di emergenza: `vaulti-server reset-password <email>` — la nuova password
+/// legge SOLO da stdin (mai argv, non finisce nella history dei processi);
+/// invalida tutte le sessioni dell'utente.
+pub fn reset_password() {
+    let cfg = config::load();
+    let Some(email) = std::env::args().nth(2) else {
+        eprintln!("uso: vaulti-server reset-password <email>  (password da stdin)");
+        std::process::exit(2);
+    };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async move {
+        let pool = db::new_pool(&format!("{}/vaulti.db", cfg.data_dir))
+            .await
+            .unwrap();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+            eprintln!("password assente: serve una riga su stdin");
+            std::process::exit(1);
+        }
+        let pw = line.trim_end_matches(['\n', '\r']).to_string();
+        drop(line);
+        if pw.len() < 8 {
+            eprintln!("password troppo corta (minimo 8)");
+            std::process::exit(1);
+        }
+        let hash = tokio::task::spawn_blocking(move || auth::hash_sync(&pw))
+            .await
+            .unwrap();
+        let n = sqlx::query("UPDATE users SET password_hash = ?1 WHERE email = ?2")
+            .bind(&hash)
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap()
+            .rows_affected();
+        if n == 0 {
+            eprintln!("utente non trovato: {email}");
+            std::process::exit(1);
+        }
+        sqlx::query(
+            "DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)",
+        )
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+        println!("password aggiornata e sessioni invalidate per {email}");
     });
 }

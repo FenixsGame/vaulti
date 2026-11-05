@@ -67,6 +67,10 @@ function render(j) {
   });
   const sel = $("mvsel");
   sel.replaceChildren();
+  const home = document.createElement("option");
+  home.value = "";
+  home.textContent = "Home";
+  sel.append(home);
   for (const f of j.folders) {
     const o = document.createElement("option");
     o.value = f.id;
@@ -114,7 +118,7 @@ function render(j) {
         await refresh();
       }),
       btn("sposta", async () => {
-        if (!sel.value) throw new Error("nessuna cartella corrente in cui spostare");
+        // "" = torna a Home (laPATCH con folder_id vuota imposta root)
         await api(`/api/files/${f.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },

@@ -152,7 +152,9 @@ pub async fn patch_folder(
     if !owns(&s.pool, &user.user_id, "folders", &id).await {
         return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
     }
-    if let Some(pid) = &pb.parent_id {
+    if let Some(pid) = &pb.parent_id
+        && !pid.is_empty()
+    {
         if !owns(&s.pool, &user.user_id, "folders", pid).await {
             return err(StatusCode::NOT_FOUND, "cartella padre sconosciuta");
         }
@@ -175,8 +177,9 @@ pub async fn patch_folder(
         }
     }
     if let Err(e) = sqlx::query(
-        "UPDATE folders SET name = COALESCE(?, name), parent_id = COALESCE(?, parent_id)
-         WHERE id = ? AND user_id = ?",
+        "UPDATE folders SET name = COALESCE(?1, name),
+         parent_id = CASE WHEN ?2 IS NULL THEN parent_id WHEN ?2 = '' THEN NULL ELSE ?2 END
+         WHERE id = ?3 AND user_id = ?4",
     )
     .bind(pb.name.as_deref())
     .bind(pb.parent_id.as_deref())
@@ -237,6 +240,7 @@ pub async fn patch_file(
         return err(StatusCode::NOT_FOUND, "file sconosciuto");
     }
     if let Some(fid) = &pb.folder_id
+        && !fid.is_empty()
         && !owns(&s.pool, &user.user_id, "folders", fid).await
     {
         return err(
@@ -245,8 +249,9 @@ pub async fn patch_file(
         );
     }
     if let Err(e) = sqlx::query(
-        "UPDATE files SET name = COALESCE(?, name), folder_id = COALESCE(?, folder_id)
-         WHERE id = ? AND user_id = ?",
+        "UPDATE files SET name = COALESCE(?1, name),
+         folder_id = CASE WHEN ?2 IS NULL THEN folder_id WHEN ?2 = '' THEN NULL ELSE ?2 END
+         WHERE id = ?3 AND user_id = ?4",
     )
     .bind(pb.name.as_deref())
     .bind(pb.folder_id.as_deref())
@@ -317,10 +322,17 @@ pub async fn download(
         s.data_dir, user.user_id, stored
     ));
     let mut resp = svc.oneshot(req).await.unwrap().map(axum::body::Body::new);
-    // ascii: fallback sicuro per browser senza RFC 5987; pct: RFC 9110 token bytes
+    // ascii: fallback sicuro per browser senza RFC 5987; controlli e `"` sostituiti
+    // (HeaderValue::from_str li rifiuterebbe); alfabetici/spazi restano
     let ascii_name: String = name
         .chars()
-        .map(|c| if c.is_ascii() && c != '"' { c } else { '_' })
+        .map(|c| {
+            if (c.is_ascii_graphic() && c != '"') || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let pct: String = name
         .bytes()

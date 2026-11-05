@@ -42,6 +42,15 @@ Apri `https://<host>.ts.net` nel browser e registra SUBITO il primo utente:
 diventa admin e la registrazione si chiude per tutti (403 dopo il primo).
 Chiunque nella tailnet potrebbe arrivare prima di te.
 
+## Cambio password admin dimenticata (emergenza)
+
+    sudo -u vaulti sh -c \
+      'VAULTI_DATA_DIR=/mnt/data/vaulti /usr/local/bin/vaulti-server reset-password tua@email.ts.net' \
+      <<< "NUOVAPASSWORD"
+
+Aggiorna l'hash e invalida tutte le sessioni di quell'utente. La nuova password
+passa SOLO via stdin, mai come argomento (non finisce nella history dei processi).
+
 ## Note
 
 - Cancellazione = hard delete: **non esiste cestino né backup** (scelta MVP).
