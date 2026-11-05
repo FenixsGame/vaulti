@@ -1,1 +1,3 @@
-fn main() { vaulti_server::run() }
+fn main() {
+    vaulti_server::run()
+}

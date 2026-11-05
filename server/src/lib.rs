@@ -1,2 +1,5 @@
 pub mod config;
-pub fn run() { /* Task 2 */ }
+
+pub fn run() {
+    /* Task 2 */
+}
