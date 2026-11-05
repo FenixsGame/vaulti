@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod handlers_auth;
+pub mod handlers_files;
 pub mod handlers_store;
 
 use axum::Router;
@@ -12,6 +13,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::delete;
 use axum::routing::get;
+use axum::routing::patch;
 use axum::routing::post;
 use axum::routing::put;
 use sqlx::SqlitePool;
@@ -38,6 +40,7 @@ impl AppState {
 
 pub fn build_router(state: AppState) -> Router {
     use crate::handlers_auth as a;
+    use crate::handlers_files as f;
     use crate::handlers_store as u;
     // limite body SOLO sui chunk; la 413 "attesa" nei test arriva dall'handler
     let chunks = Router::new()
@@ -56,6 +59,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/upload/{id}/status", get(u::status))
         .route("/api/upload/{id}/finish", post(u::finish))
         .route("/api/upload/{id}", delete(u::cancel))
+        .route("/api/files", get(f::list))
+        .route("/api/files/{id}", patch(f::patch_file).delete(f::delete_file))
+        .route("/api/folders", post(f::create_folder))
+        .route(
+            "/api/folders/{id}",
+            patch(f::patch_folder).delete(f::delete_folder),
+        )
         .merge(chunks)
         .layer(middleware::from_fn(origin_guard))
         .with_state(state)
