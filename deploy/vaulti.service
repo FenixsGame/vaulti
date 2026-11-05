@@ -1,0 +1,18 @@
+[Unit]
+Description=Vaulti personal cloud server
+After=network.target
+
+[Service]
+User=vaulti
+ExecStart=/usr/local/bin/vaulti-server
+Environment=VAULTI_DATA_DIR=/mnt/data/vaulti
+Environment=VAULTI_PORT=8420
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/mnt/data/vaulti
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
