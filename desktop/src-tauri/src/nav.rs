@@ -17,10 +17,7 @@ pub fn allow(cur: &Url, server_url: &str) -> bool {
 
 /// origin locale della webview su Windows (WebView2) e alias tauri.
 pub fn is_local(cur: &Url) -> bool {
-    const LOCAL: [(&str, &str); 2] = [
-        ("http", "tauri.localhost"),
-        ("tauri", "localhost"),
-    ];
+    const LOCAL: [(&str, &str); 2] = [("http", "tauri.localhost"), ("tauri", "localhost")];
     LOCAL
         .iter()
         .any(|(s, h)| cur.scheme() == *s && cur.host_str() == Some(*h))
@@ -85,9 +82,6 @@ mod tests {
 
     #[test]
     fn local_url_formato() {
-        assert_eq!(
-            local_url("error.html"),
-            "http://tauri.localhost/error.html"
-        );
+        assert_eq!(local_url("error.html"), "http://tauri.localhost/error.html");
     }
 }

@@ -26,7 +26,8 @@ fn navigate(w: &WebviewWindow, target: &str) -> Result<(), String> {
 }
 
 fn window_of(app: &AppHandle) -> Result<WebviewWindow, String> {
-    app.get_webview_window("main").ok_or_else(|| "finestra assente".into())
+    app.get_webview_window("main")
+        .ok_or_else(|| "finestra assente".into())
 }
 
 fn current_server(app: &AppHandle) -> String {
