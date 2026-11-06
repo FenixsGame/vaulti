@@ -43,7 +43,7 @@ Input/failure modes che i test automatici non coprono; ognuno col test che lo bl
 - Consumes: `vaulti_server::reset_password()` e `vaulti_server::run()` (esistenti).
 - Produces: `main` accetta argomento `--version` che stampa `vaulti-server <CARGO_PKG_VERSION>` ed esce 0. `reset-password` resta come è.
 
-- [ ] **Step 1: test in coda a `server/tests/integration.rs`**
+- [x] **Step 1: test in coda a `server/tests/integration.rs`**
 
 ```rust
 #[test]
@@ -63,7 +63,7 @@ fn version_flag_prints_version() {
 
 Nota: `#[test]` sincrono, senza harness; `env!("CARGO_PKG_VERSION")` nel test coincide con quello del binario (stesso package `vaulti-server`).
 
-- [ ] **Step 2: sostituisci tutto `server/src/main.rs`**
+- [x] **Step 2: sostituisci tutto `server/src/main.rs`**
 
 ```rust
 fn main() {

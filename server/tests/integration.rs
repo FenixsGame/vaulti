@@ -1186,3 +1186,17 @@ async fn reset_password_cli_updates_hash_and_kills_sessions() {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+#[test]
+fn version_flag_prints_version() {
+    use std::process::Command;
+    let out = Command::new(env!("CARGO_BIN_EXE_vaulti-server"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("vaulti-server {}", env!("CARGO_PKG_VERSION"))
+    );
+}
