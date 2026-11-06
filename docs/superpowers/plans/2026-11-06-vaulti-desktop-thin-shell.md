@@ -480,7 +480,7 @@ Poi aggiungi, dopo il job `test`:
 
 (sul push di un tag `desktop-v*` `paths-filter` ha base incerta: copre la seconda condizione della `if`; sui push normali funziona il diff contro la base standard, che copre `desktop/**` e `.github/workflows/**`.)
 
-- [ ] **Step 14: commit, push, watch fino a `test` + `desktop` verdi (prima build windows ~10-15 min)**
+- [x] **Step 14: commit, push, watch fino a `test` + `desktop` verdi (prima build windows ~10-15 min)**
 
 ```bash
 git add Cargo.toml .github/workflows/ci.yml desktop
@@ -488,7 +488,7 @@ git commit -m "feat: scheletro desktop Tauri (config, icone, capability locale) 
 git push
 ```
 
-- [ ] **Step 15: ledger.**
+- [x] **Step 15: ledger.**
 
 ---
 
@@ -513,7 +513,7 @@ git push
   - stato gestito `Mutex<String>` (l'URL server corrente, `""` se non configurato) usato dal guard `on_navigation`;
   - `on_navigation`: allow → passa; else → apre nel browser di sistema con `opener` (spawn async) e blocca.
 
-- [ ] **Step 1: `desktop/src-tauri/src/nav.rs` completo con unit test**
+- [x] **Step 1: `desktop/src-tauri/src/nav.rs` completo con unit test**
 
 ```rust
 use url::Url;
@@ -608,20 +608,20 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: dipendenze in `desktop/src-tauri/Cargo.toml`**
+- [x] **Step 2: dipendenze in `desktop/src-tauri/Cargo.toml`**
 
 ```toml
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-opener = "2"
 ```
 
-- [ ] **Step 3: `Cargo.lock` rigenerato in locale**
+- [x] **Step 3: `Cargo.lock` rigenerato in locale**
 
 ```powershell
 Set-Location 'D:\AI PROJECT\Vaulti\desktop\src-tauri'; cargo generate-lockfile
 ```
 
-- [ ] **Step 4: sostituisci tutto `desktop/src-tauri/src/lib.rs`**
+- [x] **Step 4: sostituisci tutto `desktop/src-tauri/src/lib.rs`**
 
 ```rust
 pub mod config;
@@ -748,7 +748,7 @@ fn open_config(app: AppHandle) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 5: `desktop/ui/index.html` (pagina configurazione, canale IPC reale `__TAURI_INTERNALS__`)**
+- [x] **Step 5: `desktop/ui/index.html` (pagina configurazione, canale IPC reale `__TAURI_INTERNALS__`)**
 
 ```html
 <!doctype html>
@@ -789,7 +789,7 @@ document.getElementById('go').addEventListener('click', () => {
 </html>
 ```
 
-- [ ] **Step 6: `desktop/ui/error.html` (irraggiungibile: Riprova / Cambia server)**
+- [x] **Step 6: `desktop/ui/error.html` (irraggiungibile: Riprova / Cambia server)**
 
 ```html
 <!doctype html>

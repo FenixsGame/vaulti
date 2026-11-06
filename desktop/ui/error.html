@@ -1,1 +1,35 @@
-<!doctype html><meta charset="utf-8"><title>Vaulti</title><p>pagina Task 4</p>
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Vaulti — server irraggiungibile</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font-family: system-ui; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #17171b; color: #eee; }
+  main { display: grid; gap: 12px; min-width: 340px; text-align: center; }
+  button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #2c2f36; color: #fff; cursor: pointer; }
+  #msg { color: #ff8989; min-height: 20px; }
+  h1 { margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Server irraggiungibile</h1>
+  <p>Controlla che Tailscale sia attivo e riprova.</p>
+  <button id="retry">Riprova</button>
+  <button id="cfg">Cambia server</button>
+  <div id="msg"></div>
+</main>
+<script>
+const invoke = window.__TAURI_INTERNALS__.invoke;
+const msg = document.getElementById('msg');
+document.getElementById('retry').addEventListener('click', () => {
+  msg.textContent = 'riprovo…';
+  invoke('retry_connect', {})
+    .then(() => { msg.textContent = ''; })
+    .catch((e) => { msg.textContent = String(e); });
+});
+document.getElementById('cfg').addEventListener('click', () => invoke('open_config', {}));
+</script>
+</body>
+</html>

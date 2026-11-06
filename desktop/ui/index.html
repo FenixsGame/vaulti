@@ -1,1 +1,36 @@
-<!doctype html><meta charset="utf-8"><title>Vaulti</title><p>pagina Task 4</p>
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Vaulti — collega il server</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font-family: system-ui; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #17171b; color: #eee; }
+  main { display: grid; gap: 10px; min-width: 340px; }
+  input, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #222630; color: #eee; }
+  button { background: #4c61ff; color: #fff; cursor: pointer; }
+  #msg { color: #ff8989; min-height: 20px; }
+  h1 { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Vaulti</h1>
+  <p>URL del server (solo https):</p>
+  <input id="u" type="url" placeholder="https://nome.ts.net">
+  <button id="go">Collega</button>
+  <div id="msg"></div>
+</main>
+<script>
+const msg = document.getElementById('msg');
+// canale reale di Tauri v2 (controllo positivo del test IPC, spec §10.6)
+const invoke = window.__TAURI_INTERNALS__.invoke;
+document.getElementById('go').addEventListener('click', () => {
+  msg.textContent = 'connessione in corso…';
+  invoke('save_and_connect', { url: document.getElementById('u').value })
+    .then(() => { msg.textContent = ''; })
+    .catch((e) => { msg.textContent = String(e); });
+});
+</script>
+</body>
+</html>
