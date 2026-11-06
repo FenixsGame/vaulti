@@ -1172,7 +1172,7 @@ async fn reset_password_cli_updates_hash_and_kills_sessions() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let (ph,): (String,) = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = ?")
+    let ph: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = ?")
         .bind("a@b.c")
         .fetch_one(&pool)
         .await
