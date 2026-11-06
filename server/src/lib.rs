@@ -183,9 +183,9 @@ pub fn reset_password() {
         }
         sqlx::query("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(&email)
-        .execute(&pool)
-        .await
-        .unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
         println!("password aggiornata e sessioni invalidate per {email}");
     });
 }
