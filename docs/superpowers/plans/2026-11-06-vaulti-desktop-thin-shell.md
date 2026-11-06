@@ -196,7 +196,7 @@ git push
     - `save_to(dir: &Path, c: &Config) -> std::io::Result<()>` — crea la dir se manca, scrive `config.json`;
   - finestra Tauri etichetta `main` (creata nel Task 4), identifier `net.fenixs.vaulti`, icone committate in `icons/`.
 
-- [ ] **Step 1: `Cargo.toml` radice (file completo)**
+- [x] **Step 1: `Cargo.toml` radice (file completo)**
 
 ```toml
 [workspace]
@@ -205,7 +205,7 @@ members = ["server"]
 exclude = ["desktop"]
 ```
 
-- [ ] **Step 2: icone (locale, nessuna compilazione)**
+- [x] **Step 2: icone (locale, nessuna compilazione)**
 
 ```powershell
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User') + ';' + "$env:USERPROFILE\.cargo\bin"
@@ -227,7 +227,7 @@ Expand-Archive "$env:TEMP\cargo-tauri.zip" -DestinationPath "$env:TEMP\tauricli"
 
 (`desktop/icon.png` sorgente va committato: il README Task 6 spiega come rigenerare.)
 
-- [ ] **Step 3: `desktop/src-tauri/Cargo.toml`**
+- [x] **Step 3: `desktop/src-tauri/Cargo.toml`**
 
 ```toml
 [package]
@@ -250,7 +250,7 @@ tempfile = "3"
 
 (reqwest e i plugin arrivano nei Task 4-5, ogni task resta compilabile da solo.)
 
-- [ ] **Step 4: `desktop/src-tauri/build.rs`**
+- [x] **Step 4: `desktop/src-tauri/build.rs`**
 
 ```rust
 fn main() {
@@ -258,7 +258,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 5: `desktop/src-tauri/tauri.conf.json`**
+- [x] **Step 5: `desktop/src-tauri/tauri.conf.json`**
 
 ```json
 {
@@ -282,7 +282,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 6: capability solo locale — `desktop/src-tauri/capabilities/default.json`**
+- [x] **Step 6: capability solo locale — `desktop/src-tauri/capabilities/default.json`**
 
 ```json
 {
@@ -295,7 +295,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 7: `desktop/src-tauri/.gitignore`**
+- [x] **Step 7: `desktop/src-tauri/.gitignore`**
 
 ```
 /target
@@ -304,7 +304,7 @@ fn main() {
 
 (MAI aggiungere `Cargo.lock`: lo commitiamo.)
 
-- [ ] **Step 8: `desktop/ui/index.html` e `desktop/ui/error.html` segnaposto** (il Task 4 li sostituisce; servono ora perché `frontendDist` punti a file reali)
+- [x] **Step 8: `desktop/ui/index.html` e `desktop/ui/error.html` segnaposto** (il Task 4 li sostituisce; servono ora perché `frontendDist` punti a file reali)
 
 ```html
 <!doctype html><meta charset="utf-8"><title>Vaulti</title><p>pagina Task 4</p>
@@ -312,7 +312,7 @@ fn main() {
 
 (medesimo contenuto per error.html.)
 
-- [ ] **Step 9: `desktop/src-tauri/src/config.rs`**
+- [x] **Step 9: `desktop/src-tauri/src/config.rs`**
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -404,7 +404,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 10: `desktop/src-tauri/src/lib.rs` (minimale, il Task 4 sostituirà il file)**
+- [x] **Step 10: `desktop/src-tauri/src/lib.rs` (minimale, il Task 4 sostituirà il file)**
 
 ```rust
 pub mod config;
@@ -416,7 +416,7 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 11: `desktop/src-tauri/src/main.rs`**
+- [x] **Step 11: `desktop/src-tauri/src/main.rs`**
 
 ```rust
 fn main() {
@@ -424,7 +424,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 12: Cargo.lock locale**
+- [x] **Step 12: Cargo.lock locale**
 
 ```powershell
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User') + ';' + "$env:USERPROFILE\.cargo\bin"
@@ -432,7 +432,7 @@ Set-Location 'D:\AI PROJECT\Vaulti\desktop\src-tauri'
 cargo generate-lockfile
 ```
 
-- [ ] **Step 13: job CI Windows — in `.github/workflows/ci.yml` aggiorna la sezione `on` e inserisci due job tra `test` e `release`**
+- [x] **Step 13: job CI Windows — in `.github/workflows/ci.yml` aggiorna la sezione `on` e inserisci due job tra `test` e `release`**
 
 La sezione `on` diventa: senza `desktop-v*` tra i tag il push del tag NON attiva il workflow (difetto trovato in questo self-review):
 
