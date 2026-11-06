@@ -1204,3 +1204,23 @@ fn version_flag_prints_version() {
         format!("vaulti-server {}", env!("CARGO_PKG_VERSION"))
     );
 }
+
+#[tokio::test]
+async fn static_assets_no_cache() {
+    let t = common::boot().await;
+    for path in ["/", "/app.js", "/style.css"] {
+        let res = t
+            .app
+            .clone()
+            .oneshot(common::raw_req("GET", path, "", Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
+            "route {path}"
+        );
+    }
+}

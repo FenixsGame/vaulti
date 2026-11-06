@@ -103,7 +103,7 @@ Watch (pattern di sessione): `Start-Sleep -Seconds 20; $id = gh run list --repo 
 - Consumes: niente di nuovo (axum già in uso; tuple `[(HeaderName, &'static str); 2]` supportata).
 - Produces: le route `/`, `/app.js`, `/style.css` rispondono con header `cache-control: no-cache` oltre al content-type attuale.
 
-- [ ] **Step 1: test in coda a `server/tests/integration.rs`**
+- [x] **Step 1: test in coda a `server/tests/integration.rs`**
 
 ```rust
 #[tokio::test]
@@ -127,7 +127,7 @@ async fn static_assets_no_cache() {
 
 (cookie vuota va bene: le route statiche sono pubbliche.)
 
-- [ ] **Step 2: sostituisci tutto `server/src/handlers_static.rs`**
+- [x] **Step 2: sostituisci tutto `server/src/handlers_static.rs`**
 
 ```rust
 use axum::http::HeaderName;
