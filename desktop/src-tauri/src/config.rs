@@ -55,7 +55,14 @@ mod tests {
 
     #[test]
     fn url_fuoriserie_rifiutati() {
-        for s in ["", "   ", "https://", "ftp://x.ts.net", "nome.ts.net", "//x"] {
+        for s in [
+            "",
+            "   ",
+            "https://",
+            "ftp://x.ts.net",
+            "nome.ts.net",
+            "//x",
+        ] {
             assert!(validate_url(s).is_err(), "avrebbe accettato {s:?}");
         }
     }
@@ -69,7 +76,10 @@ mod tests {
             autostart: false,
         };
         save_to(d.path(), &c).unwrap();
-        assert_eq!(load_from(d.path()).unwrap().server_url, "https://nome.ts.net/");
+        assert_eq!(
+            load_from(d.path()).unwrap().server_url,
+            "https://nome.ts.net/"
+        );
     }
 
     #[test]
