@@ -1194,7 +1194,11 @@ fn version_flag_prints_version() {
         .arg("--version")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         format!("vaulti-server {}", env!("CARGO_PKG_VERSION"))
