@@ -112,3 +112,9 @@ jobs:
       - run: cp target/x86_64-unknown-linux-musl/release/vaulti-server vaulti-server-linux-musl
       - uses: softprops/action-gh-release@v2
         with: { files: vaulti-server-linux-musl }
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node --test web/js/
