@@ -56,6 +56,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::<String>::new(String::new()))
         .invoke_handler(tauri::generate_handler![
             save_and_connect,
@@ -151,6 +152,23 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            // autoupdater: check 2 s dopo l'avvio; se c'è un aggiornamento firmato
+            // lo installa — su Windows install() chiude il processo e l'installer
+            // NSIS riparte da solo; errori = silenzio, l'app continua a girare.
+            {
+                use tauri_plugin_updater::UpdaterExt;
+                let apph = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if let Ok(u) = apph.updater() {
+                        if let Ok(Some(upd)) = u.check().await {
+                            if let Err(e) = upd.download_and_install(|_, _| {}, || {}).await {
+                                eprintln!("aggiornamento non installato: {e}");
+                            }
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

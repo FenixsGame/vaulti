@@ -73,14 +73,32 @@ jobs:
           $p = 'desktop/src-tauri/tauri.conf.json'
           (Get-Content $p -Raw).Replace('"version": "0.1.0"', ('"version": ' + '"' + $v + '"')) | Set-Content $p -NoNewline
       - run: cargo tauri build --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         working-directory: desktop/src-tauri
       - name: rename asset
         shell: pwsh
         run: |
           $exe = Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis' -Filter '*-setup.exe' | Select-Object -First 1
           Copy-Item $exe.FullName vaulti-setup-x64.exe
+      - name: genera latest.json (manifest updater)
+        shell: pwsh
+        run: |
+          $sig = Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis' -Filter '*.zip.sig' | Select-Object -First 1
+          $zip = $sig.BaseName
+          $v = $env:GITHUB_REF_NAME -replace '^desktop-v',''
+          $s = (Get-Content $sig.FullName -Raw).Trim()
+          @{ version = $v
+             pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+             platforms = @{ 'windows-x86_64' = @{ signature = $s; url = "https://github.com/FenixsGame/vaulti/releases/download/$env:GITHUB_REF_NAME/$zip" } }
+             } | ConvertTo-Json -Depth 4 | Set-Content latest.json -NoNewline
       - uses: softprops/action-gh-release@v2
-        with: { files: vaulti-setup-x64.exe }
+        with:
+          files: |
+            vaulti-setup-x64.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.zip
+            latest.json
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
