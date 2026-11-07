@@ -992,7 +992,7 @@ fn spawn_retry_loop(app: AppHandle) {
 
 (Con autostart, il retry in background assorbe il boot lento di Tailscale: la finestra parte nascosta e resta in uno stato gestito; quando il server risponde, l'utente apre dalla tray e il pulsante Riprova ora va a buon fine.)
 
-- [ ] **Step 4: commit, push, watch fino a desktop job verde**
+- [x] **Step 4: commit, push, watch fino a desktop job verde**
 
 ```bash
 git add desktop
@@ -1000,7 +1000,7 @@ git commit -m "feat: tray Apri/Ricarica/Cambia server/Esci, X nascosto, single-i
 git push
 ```
 
-- [ ] **Step 5: ledger.**
+- [x] **Step 5: ledger.**
 
 ---
 
@@ -1014,7 +1014,7 @@ git push
 - Consumes: crate completo (Task 3-5), icone in `icons/` (Task 3), `tauri.conf.json` con `version: "0.1.0"` e `installMode: currentUser` (Task 3), tag `desktop-v*`.
 - Produces: release GitHub `desktop-vX.Y.Z` con asset `vaulti-setup-x64.exe`; sezione README "App Windows (desktop)" con nota SmartScreen e percorso dei download.
 
-- [ ] **Step 1: job in `ci.yml` (dopo il job `desktop`)**
+- [x] **Step 1: job in `ci.yml` (dopo il job `desktop`)**
 
 ```yaml
   release-desktop:
@@ -1055,7 +1055,7 @@ git push
 
 (bump futuro della CLI: cambiare in questo job solo le due variabili `$ver` e `$hash`. La riscrittura della versione tocca la copia di `tauri.conf.json` nel checkout dei runner di release; nel repo il file resta a `0.1.0`.)
 
-- [ ] **Step 2: README — in fondo a `README.md`, aggiungi la sezione**
+- [x] **Step 2: README — in fondo a `README.md`, aggiungi la sezione**
 
 ```markdown
 ## App Windows (desktop)
