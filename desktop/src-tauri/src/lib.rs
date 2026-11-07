@@ -76,6 +76,8 @@ pub fn run() {
                         return true;
                     }
                     let ext = url.to_string();
+                    // E0507: la chiusura esterna è Fn, il clone serve a ogni chiamata
+                    let apph = apph.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = apph.opener().open_url(ext, None::<&str>) {
                             eprintln!("open_url fallito: {e}");
