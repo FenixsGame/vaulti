@@ -81,23 +81,21 @@ jobs:
         shell: pwsh
         run: |
           $exe = Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis' -Filter '*-setup.exe' | Select-Object -First 1
-          Copy-Item $exe.FullName vaulti-setup-x64.exe
+          Move-Item $exe.FullName vaulti-setup-x64.exe
       - name: genera latest.json (manifest updater)
         shell: pwsh
         run: |
-          $sig = Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis' -Filter '*.zip.sig' | Select-Object -First 1
-          $zip = $sig.BaseName
-          $v = $env:GITHUB_REF_NAME -replace '^desktop-v',''
+          $sig = Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis' -Filter '*.exe.sig' | Select-Object -First 1
           $s = (Get-Content $sig.FullName -Raw).Trim()
+          $v = $env:GITHUB_REF_NAME -replace '^desktop-v',''
           @{ version = $v
              pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-             platforms = @{ 'windows-x86_64' = @{ signature = $s; url = "https://github.com/FenixsGame/vaulti/releases/download/$env:GITHUB_REF_NAME/$zip" } }
+             platforms = @{ 'windows-x86_64' = @{ signature = $s; url = "https://github.com/FenixsGame/vaulti/releases/download/$env:GITHUB_REF_NAME/vaulti-setup-x64.exe" } }
              } | ConvertTo-Json -Depth 4 | Set-Content latest.json -NoNewline
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             vaulti-setup-x64.exe
-            desktop/src-tauri/target/release/bundle/nsis/*.zip
             latest.json
 
   release:
