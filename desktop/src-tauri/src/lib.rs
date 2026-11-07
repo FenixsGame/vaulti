@@ -57,12 +57,12 @@ pub fn run() {
             let cfg = config::load_from(&dir);
             let start: WebviewUrl = match &cfg {
                 Some(c) if tauri::async_runtime::block_on(healthz_ok(&c.server_url)) => {
-                    set_server(app, &c.server_url);
+                    set_server(app.handle(), &c.server_url);
                     let u = Url::parse(&c.server_url).expect("url di config valida");
                     WebviewUrl::External(u)
                 }
                 Some(c) => {
-                    set_server(app, &c.server_url);
+                    set_server(app.handle(), &c.server_url);
                     WebviewUrl::App("error.html".into())
                 }
                 None => WebviewUrl::App("index.html".into()),
