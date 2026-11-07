@@ -1,0 +1,16 @@
+/* componenti (pulsanti, card, campi, errori) */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl);
+  transition: background-color 120ms; cursor: pointer; }
+.btn:hover { background: #F5F5F5; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--row-hover); }
+.btn.wide { justify-content: center; width: 100%; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-win);
+  padding: 24px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+input[type=email], input[type=password], input[type=search], select {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface); }
+input:disabled { background: var(--bg-app); color: var(--text-2); }
+.err { color: var(--danger); min-height: 1.4em; font-size: 12px; }

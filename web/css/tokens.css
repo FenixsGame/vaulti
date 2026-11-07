@@ -1,0 +1,9 @@
+/* token (spec §3) */
+:root {
+  --bg-app: #F3F3F3; --surface: #FFFFFF; --border: #E5E5E5;
+  --text: #1A1A1A; --text-2: #616161;
+  --accent: #0067C0; --accent-hover: #1975C5;
+  --row-hover: rgba(0,0,0,.04); --row-selected: #E5F1FB; --danger: #C42B1C;
+  --r-ctl: 4px; --r-win: 8px; --row-h: 40px;
+  --font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+}

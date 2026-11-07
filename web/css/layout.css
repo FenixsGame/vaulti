@@ -1,38 +1,4 @@
-/* ==== token (spec §3) ==== */
-:root {
-  --bg-app: #F3F3F3; --surface: #FFFFFF; --border: #E5E5E5;
-  --text: #1A1A1A; --text-2: #616161;
-  --accent: #0067C0; --accent-hover: #1975C5;
-  --row-hover: rgba(0,0,0,.04); --row-selected: #E5F1FB; --danger: #C42B1C;
-  --r-ctl: 4px; --r-win: 8px; --row-h: 40px;
-  --font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-}
-/* ==== reset + base ==== */
-* { box-sizing: border-box; margin: 0; }
-html, body { height: 100%; }
-body { font: 14px/1.4 var(--font); color: var(--text); background: var(--bg-app); }
-button, input, select { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.i, svg { fill: currentColor; }
-.i16 { width: 16px; height: 16px; } .i20 { width: 20px; height: 20px; } .i32 { width: 32px; height: 32px; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-/* ==== componenti ==== */
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl);
-  transition: background-color 120ms; cursor: pointer; }
-.btn:hover { background: #F5F5F5; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-hover); }
-.btn.ghost { border-color: transparent; background: transparent; }
-.btn.ghost:hover { background: var(--row-hover); }
-.btn.wide { justify-content: center; width: 100%; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-win);
-  padding: 24px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
-input[type=email], input[type=password], input[type=search], select {
-  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface); }
-input:disabled { background: var(--bg-app); color: var(--text-2); }
-.err { color: var(--danger); min-height: 1.4em; font-size: 12px; }
-/* ==== guscio ==== */
+/* layout: login, guscio (topbar/left/main), crumbs, listing */
 .login-overlay { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .login { width: min(360px, 100%); display: grid; gap: 10px; text-align: center; }
 .login .logo { margin: 0 auto; }
@@ -61,7 +27,6 @@ input:disabled { background: var(--bg-app); color: var(--text-2); }
 .actions { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
 .actions label { color: var(--text-2); display: flex; gap: 6px; align-items: center; }
 .prog { color: var(--text-2); font-size: 12px; }
-/* ==== listing ==== */
 #listing { width: 100%; border-collapse: collapse; }
 #listing td { height: var(--row-h); border-bottom: 1px solid var(--border); padding: 0 8px; }
 #listing tr:hover td { background: var(--row-hover); }

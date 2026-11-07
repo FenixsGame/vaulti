@@ -1,0 +1,9 @@
+/* reset + base */
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body { font: 14px/1.4 var(--font); color: var(--text); background: var(--bg-app); }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.i, svg { fill: currentColor; }
+.i16 { width: 16px; height: 16px; } .i20 { width: 20px; height: 20px; } .i32 { width: 32px; height: 32px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

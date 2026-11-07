@@ -1,29 +1,7 @@
-"use strict";
-const $ = (id) => document.getElementById(id);
+import { $, api, showLogin, fmt } from "./api.js";
+
 let folderId = null;
 let crumbPath = [{ id: null, name: "Home" }];
-
-async function api(p, opts = {}) {
-  const r = await fetch(p, { credentials: "same-origin", ...opts });
-  if (r.status === 401) { showLogin(); throw new Error("401"); }
-  if (!r.ok) {
-    const e = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-    throw new Error(e.error || `HTTP ${r.status}`);
-  }
-  return r.status === 204 ? null : r.json();
-}
-
-const fmt = (n) =>
-  n >= 1073741824 ? (n / 1073741824).toFixed(1) + " GB"
-  : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB"
-  : n >= 1024 ? (n / 1024).toFixed(1) + " KB"
-  : n + " B";
-
-function showLogin() {
-  $("main").hidden = true;
-  $("login").hidden = false;
-  $("breg").hidden = false; // primo utente: visibile solo qui, il server rifiuta dopo con 403
-}
 
 function merr(e) {
   $("merr").textContent = e.message || String(e);
@@ -118,7 +96,7 @@ function render(j) {
         await refresh();
       }),
       btn("sposta", async () => {
-        // "" = torna a Home (laPATCH con folder_id vuota imposta root)
+        // "" = torna a Home (la PATCH con folder_id vuota imposta root)
         await api(`/api/files/${f.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },

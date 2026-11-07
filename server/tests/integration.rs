@@ -1045,7 +1045,7 @@ async fn cross_user_file_404_and_deleted_404() {
 #[tokio::test]
 async fn index_and_assets_served() {
     let t = boot().await;
-    for uri in ["/", "/app.js", "/style.css"] {
+    for uri in ["/", "/css/base.css", "/js/app.js"] {
         let res = t
             .app
             .clone()
@@ -1208,7 +1208,7 @@ fn version_flag_prints_version() {
 #[tokio::test]
 async fn static_assets_no_cache() {
     let t = common::boot().await;
-    for path in ["/", "/app.js", "/style.css"] {
+    for path in ["/", "/css/base.css", "/js/app.js"] {
         let res = t
             .app
             .clone()
@@ -1223,4 +1223,47 @@ async fn static_assets_no_cache() {
             "route {path}"
         );
     }
+}
+
+#[tokio::test]
+async fn asset_js_has_js_mime() {
+    let t = common::boot().await;
+    let res = t
+        .app
+        .clone()
+        .oneshot(common::raw_req("GET", "/js/app.js", "", Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/javascript; charset=utf-8")
+    );
+}
+
+#[tokio::test]
+async fn asset_missing_is_404() {
+    let t = common::boot().await;
+    for path in ["/nope", "/../x%2Fx", "/../css/base.css"] {
+        let res = t
+            .app
+            .clone()
+            .oneshot(common::raw_req("GET", path, "", Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "route {path}");
+    }
+}
+
+#[tokio::test]
+async fn post_to_fallback_is_404() {
+    let t = common::boot().await;
+    let res = t
+        .app
+        .clone()
+        .oneshot(common::raw_req("POST", "/css/base.css", "", Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
