@@ -45,10 +45,11 @@ pub async fn asset(req: Request) -> Response {
 }
 
 fn asset_response(ct: &'static str, bytes: Vec<u8>) -> Response {
+    // chiavi tutte &str: in un array-tuple axum unifica il tipo di ogni elemento
     (
         [
-            (CONTENT_TYPE, ct),
-            (CACHE_CONTROL, "no-cache"),
+            ("content-type", ct),
+            ("cache-control", "no-cache"),
             ("x-content-type-options", "nosniff"),
         ],
         bytes,
