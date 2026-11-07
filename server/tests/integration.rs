@@ -1245,7 +1245,13 @@ async fn asset_js_has_js_mime() {
 #[tokio::test]
 async fn asset_missing_is_404() {
     let t = common::boot().await;
-    for path in ["/nope", "/../x%2Fx", "/../css/base.css"] {
+    for path in [
+        "/nope",
+        "/../x%2Fx",
+        "/../css/base.css",
+        "/package.json",
+        "/js/format.test.mjs",
+    ] {
         let res = t
             .app
             .clone()

@@ -1,5 +1,7 @@
 /* reset + base */
 * { box-sizing: border-box; margin: 0; }
+/* gli elementi hidden devono battere qualunque display autoriale (.login-overlay grid, .btn inline-flex) */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body { font: 14px/1.4 var(--font); color: var(--text); background: var(--bg-app); }
 button, input, select { font: inherit; color: inherit; }

@@ -38,6 +38,10 @@ pub async fn asset(req: Request) -> Response {
     if path.is_empty() || path.contains("..") || path.contains('\\') {
         return miss();
     }
+    // manifest e test non sono asset dell'interfaccia: mai serviti via fallback
+    if path == "package.json" || path.ends_with(".test.mjs") {
+        return miss();
+    }
     match Ui::get(path) {
         Some(f) => asset_response(mime(path), f.data.into_owned()),
         None => miss(),
@@ -60,7 +64,11 @@ fn asset_response(ct: &'static str, bytes: Vec<u8>) -> Response {
 fn miss() -> Response {
     (
         StatusCode::NOT_FOUND,
-        [(CONTENT_TYPE, "text/plain"), (CACHE_CONTROL, "no-cache")],
+        [
+            (CONTENT_TYPE, "text/plain"),
+            (CACHE_CONTROL, "no-cache"),
+            ("x-content-type-options", "nosniff"),
+        ],
         "",
     )
         .into_response()
