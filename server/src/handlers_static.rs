@@ -3,7 +3,6 @@
 use axum::extract::Request;
 use axum::http::Method;
 use axum::http::StatusCode;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
@@ -62,11 +61,12 @@ fn asset_response(ct: &'static str, bytes: Vec<u8>) -> Response {
 }
 
 fn miss() -> Response {
+    // chiavi tutte &str come in asset_response: nello stesso array-tuple axum
     (
         StatusCode::NOT_FOUND,
         [
-            (CONTENT_TYPE, "text/plain"),
-            (CACHE_CONTROL, "no-cache"),
+            ("content-type", "text/plain"),
+            ("cache-control", "no-cache"),
             ("x-content-type-options", "nosniff"),
         ],
         "",
