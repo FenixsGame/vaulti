@@ -100,7 +100,7 @@ pub fn run() {
                 .build()?;
             let mainw = app.get_webview_window("main").expect("finestra creata");
             let hidable = mainw.clone();
-            let _ = mainw.on_window_event(move |ev| {
+            mainw.on_window_event(move |ev| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
                     api.prevent_close();
                     let _ = hidable.hide();
