@@ -2,25 +2,55 @@
 <html lang="it"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Vaulti</title>
 <link rel="stylesheet" href="/style.css"></head><body>
-<section id="login" class="card">
-  <h1>Vaulti</h1>
-  <input id="email" type="email" placeholder="email" autocomplete="username">
-  <input id="pw" type="password" placeholder="password" autocomplete="current-password">
-  <button id="blogin">Accedi</button>
-  <button id="breg" hidden>Primo utente (admin)</button>
-  <p id="lerr" class="err"></p>
+<!-- sprite SVG: disegnate da zero, niente icone Microsoft copiate -->
+<svg hidden xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-logo" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="3.5" fill="#0067C0"/><rect x="3.2" y="6.6" width="5.6" height="5.6" rx="1.2" fill="#fff"/><circle cx="10.6" cy="5.4" r="2.6" fill="#fff"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4.5a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.5h5.6a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-10a1.5 1.5 0 0 1-1.5-1.5z" fill="currentColor" opacity=".85"/></symbol>
+  <symbol id="i-file" viewBox="0 0 16 16"><path d="M4 1.5h5l3 3v10a.5.5 0 0 1-1 0V5H7.5V3H5v9.5h-.5A.75.75 0 0 1 4 11.75z" fill="currentColor" opacity=".85"/></symbol>
+</svg>
+
+<section id="login" class="login-overlay">
+  <form class="login card" onsubmit="return false">
+    <svg class="logo i32"><use href="#i-logo"/></svg>
+    <h1>Vaulti</h1>
+    <p class="sub">I tuoi file, in casa tua.</p>
+    <input id="email" type="email" placeholder="email" autocomplete="username">
+    <input id="pw" type="password" placeholder="password" autocomplete="current-password">
+    <button id="blogin" class="btn primary wide">Accedi</button>
+    <button id="breg" class="btn wide" hidden>Primo utente (admin)</button>
+    <p id="lerr" class="err"></p>
+  </form>
 </section>
+
 <main id="main" hidden>
-  <header><span id="quota"></span><span>Sposta in:</span>
-    <select id="mvsel"></select><button id="blogout">Esci</button></header>
-  <nav id="crumbs"></nav>
-  <div class="actions">
-    <button id="bpick">Carica file</button>
-    <button id="bfolder">Nuova cartella</button>
-    <input id="file" type="file" hidden multiple>
+  <header class="topbar">
+    <div class="brand"><svg class="i i20"><use href="#i-logo"/></svg>Vaulti</div>
+    <input id="q" class="search" type="search" placeholder="Cerca" disabled>
+    <div class="user">
+      <span id="who" class="who"></span>
+      <button id="blogout" class="btn ghost">Esci</button>
+    </div>
+  </header>
+  <div class="cols">
+    <nav class="left">
+      <button id="lnav-files" class="lnav-item active"><svg class="i i16"><use href="#i-folder"/></svg>I miei file</button>
+      <div class="space">
+        <div class="bar"><div id="spacebar" class="fill"></div></div>
+        <span id="quota" class="quota"></span>
+      </div>
+    </nav>
+    <div class="main">
+      <nav id="crumbs" class="crumbs"></nav>
+      <div class="actions">
+        <button id="bpick" class="btn primary">Carica file</button>
+        <button id="bfolder" class="btn">Nuova cartella</button>
+        <label>Sposta in <select id="mvsel"></select></label>
+        <input id="file" type="file" hidden multiple>
+      </div>
+      <table id="listing"><tbody></tbody></table>
+      <p id="prog" class="prog"></p>
+      <p id="merr" class="err"></p>
+    </div>
   </div>
-  <table id="listing"><tbody></tbody></table>
-  <p id="prog"></p>
-  <p id="merr" class="err"></p>
 </main>
 <script src="/app.js"></script></body></html>
