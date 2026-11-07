@@ -107,11 +107,12 @@ pub fn run() {
                 }
             });
             {
+                // autolaunch() in autostart v2.7 (autostart() era il nome pre-2.x)
                 use tauri_plugin_autostart::ManagerExt;
                 let _ = if autostart {
-                    app.autostart().enable()
+                    app.autolaunch().enable()
                 } else {
-                    app.autostart().disable()
+                    app.autolaunch().disable()
                 };
             }
             if autostart {
