@@ -1075,7 +1075,7 @@ git push
   `tauri-cli-v2.12.4` precompilata, vedi workflow `release-desktop`).
 ```
 
-- [ ] **Step 3: commit, push, watch (release-desktop non gira: nessun tag desktop, il green del job `desktop` basta)**
+- [x] **Step 3: commit, push, watch (release-desktop non gira: nessun tag desktop, il green del job `desktop` basta)**
 
 ```bash
 git add .github/workflows/ci.yml README.md
@@ -1083,7 +1083,7 @@ git commit -m "ci: release-desktop per tag desktop-v* (CLI pinnata+hash, rename 
 git push
 ```
 
-- [ ] **Step 4: ledger.**
+- [x] **Step 4: ledger.**
 
 ---
 
