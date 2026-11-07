@@ -11,7 +11,10 @@ async function listit(fid) {
   folderId = fid;
   const j = await api("/api/files" + (fid ? `?folder_id=${fid}` : ""));
   render(j);
-  $("quota").textContent = "usati " + fmt(j.quota.used) + " · liberi " + fmt(j.quota.free);
+  // barra spazio + testo quota (piano Task 4)
+  const tot = j.quota.used + j.quota.free;
+  $("spacebar").style.width = tot ? Math.round((j.quota.used / tot) * 100) + "%" : "0";
+  $("quota").textContent = `usati ${fmt(j.quota.used)} su ${fmt(tot)}`;
 }
 const refresh = () => listit(folderId);
 
@@ -184,6 +187,7 @@ $("blogin").addEventListener("click", async () => {
     });
     $("login").hidden = true;
     $("main").hidden = false;
+    $("who").textContent = $("email").value.trim();
     crumbPath = [{ id: null, name: "Home" }];
     await refresh();
   } catch (e) {
@@ -231,7 +235,13 @@ $("bfolder").addEventListener("click", async () => {
   } catch (e) { merr(e); }
 });
 
-// sessione già valida? entra direttamente (401 → schermata login)
+// chi è connesso? (401 niente sessione → api() mostra già la login card)
+api("/api/me").then((j) => { $("who").textContent = j.email; }).catch(() => {});
+
+// sessione già valida? entra direttamente; il server giù manda il messaggio in login card
 listit(null)
   .then(() => { $("login").hidden = true; $("main").hidden = false; })
-  .catch(() => {});
+  .catch((e) => {
+    if (String(e.message) !== "401")
+      $("lerr").textContent = "server non raggiungibile: controlla Tailscale";
+  });
