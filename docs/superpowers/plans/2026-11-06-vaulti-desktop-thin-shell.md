@@ -829,7 +829,7 @@ document.getElementById('cfg').addEventListener('click', () => invoke('open_conf
 </html>
 ```
 
-- [ ] **Step 7: commit, push, watch fino a job desktop verde**
+- [x] **Step 7: commit, push, watch fino a job desktop verde**
 
 ```bash
 git add desktop
@@ -839,7 +839,7 @@ git push
 
 (Gli errori più probabili: nome/metodo API v2 diverso da quello previsto — la correzione va eseguita col messaggio del compilatore e annotata nel registro.)
 
-- [ ] **Step 8: ledger (annota anche che il controllo positivo IPC è l'invoke di `save_and_connect`, la verifica negativa resta per il collaudo Task 7).**
+- [x] **Step 8: ledger (annota anche che il controllo positivo IPC è l'invoke di `save_and_connect`, la verifica negativa resta per il collaudo Task 7).**
 
 ---
 
@@ -857,7 +857,7 @@ git push
   - secondo processo → mostra/attiva la finestra esistente;
   - `config.autostart == true` → `autostart().enable()`, finestra parte nascosta, retry loop con backoff 10 s → raddoppio fino a tetto 300 s; false → `disable()`.
 
-- [ ] **Step 1: dipendenze in `Cargo.toml`**
+- [x] **Step 1: dipendenze in `Cargo.toml`**
 
 ```toml
 tauri-plugin-single-instance = "2"
@@ -865,13 +865,13 @@ tauri-plugin-autostart = "2"
 tokio = { version = "1", features = ["time"] }
 ```
 
-- [ ] **Step 2: `Cargo.lock` rigenerato**
+- [x] **Step 2: `Cargo.lock` rigenerato**
 
 ```powershell
 Set-Location 'D:\AI PROJECT\Vaulti\desktop\src-tauri'; cargo generate-lockfile
 ```
 
-- [ ] **Step 3: modifiche chirurgiche a `desktop/src-tauri/src/lib.rs` (file del Task 4): i blocchi seguenti vanno nelle posizioni indicate**
+- [x] **Step 3: modifiche chirurgiche a `desktop/src-tauri/src/lib.rs` (file del Task 4): i blocchi seguenti vanno nelle posizioni indicate**
 
 1. Nella catena del builder, dopo `.plugin(tauri_plugin_opener::init())`, aggiungi i due plugin:
 

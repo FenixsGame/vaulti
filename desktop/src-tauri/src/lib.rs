@@ -46,6 +46,16 @@ fn set_server(app: &AppHandle, s: &str) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![]),
+        ))
         .manage(Mutex::<String>::new(String::new()))
         .invoke_handler(tauri::generate_handler![
             save_and_connect,
@@ -67,9 +77,11 @@ pub fn run() {
                 }
                 None => WebviewUrl::App("index.html".into()),
             };
+            let autostart = cfg.as_ref().map(|c| c.autostart).unwrap_or(false);
             let apph = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", start)
                 .title("Vaulti")
+                .visible(!autostart)
                 .disable_drag_drop_handler()
                 .on_navigation(move |url| {
                     if nav::allow(url, &current_server(&apph)) {
@@ -86,6 +98,58 @@ pub fn run() {
                     false
                 })
                 .build()?;
+            let mainw = app.get_webview_window("main").expect("finestra creata");
+            let hidable = mainw.clone();
+            let _ = mainw.on_window_event(move |ev| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+                    api.prevent_close();
+                    let _ = hidable.hide();
+                }
+            });
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let _ = if autostart {
+                    app.autostart().enable()
+                } else {
+                    app.autostart().disable()
+                };
+            }
+            if autostart {
+                spawn_retry_loop(app.handle().clone());
+            }
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::TrayIconBuilder;
+            let open = MenuItem::with_id(app, "open", "Apri Vaulti", true, None::<&str>)?;
+            let reload = MenuItem::with_id(app, "reload", "Ricarica", true, None::<&str>)?;
+            let cfgmi = MenuItem::with_id(app, "cfg", "Cambia server", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &reload, &cfgmi, &quit])?;
+            TrayIconBuilder::with_id("vaulti-tray")
+                .menu(&menu)
+                .icon(app.default_window_icon().expect("icona bundle").clone())
+                .on_menu_event(|app, ev| match ev.id().as_ref() {
+                    "open" => activate(app),
+                    "reload" => {
+                        let _ = retry_connect(app.clone());
+                    }
+                    "cfg" => {
+                        let _ = open_config(app.clone());
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, ev| {
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = ev
+                    {
+                        activate(tray.app_handle());
+                    }
+                })
+                .build(app)?;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -128,4 +192,28 @@ fn retry_connect(app: AppHandle) -> Result<(), String> {
 fn open_config(app: AppHandle) -> Result<(), String> {
     let w = window_of(&app)?;
     navigate(&w, &nav::local_url("index.html"))
+}
+
+fn activate(app: &AppHandle) {
+    if let Ok(w) = window_of(app) {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn spawn_retry_loop(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let dir = app.path().app_config_dir().expect("config dir");
+        let Some(c) = config::load_from(&dir) else {
+            return;
+        };
+        let mut wait = 10;
+        loop {
+            if healthz_ok(&c.server_url).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            wait = (wait * 2).min(300);
+        }
+    });
 }
