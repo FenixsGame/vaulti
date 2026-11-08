@@ -22,20 +22,51 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-async fn uploads_row(
-    pool: &sqlx::SqlitePool,
-    upload_id: &str,
-    user_id: &str,
-) -> Option<(i64, i64, i64, String)> {
-    let r: Option<(i64, i64, i64, String)> = sqlx::query_as(
+#[derive(sqlx::FromRow)]
+struct Upload {
+    chunk_size: i64,
+    total_chunks: i64,
+    size: i64,
+    name: String,
+}
+
+impl Upload {
+    // atteso: chunk_size; l'ultimo è size - (total-1)*chunk_size
+    fn expected_len(&self, n: i64) -> i64 {
+        if n + 1 == self.total_chunks {
+            self.size - (self.total_chunks - 1) * self.chunk_size
+        } else {
+            self.chunk_size
+        }
+    }
+}
+
+async fn uploads_row(pool: &sqlx::SqlitePool, upload_id: &str, user_id: &str) -> Option<Upload> {
+    sqlx::query_as::<_, Upload>(
         "SELECT chunk_size, total_chunks, size, name FROM uploads WHERE id = ? AND user_id = ?",
     )
     .bind(upload_id)
     .bind(user_id)
     .fetch_optional(pool)
     .await
-    .unwrap();
-    r
+    .unwrap()
+}
+
+// pulizia unica di un upload morto: righe in transazione, tmp rimosso a prescindere
+async fn discard_upload(s: &AppState, id: &str) {
+    let mut tx = s.pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM uploads WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let _ = tokio::fs::remove_dir_all(s.upload_dir(id)).await;
 }
 
 #[derive(Deserialize)]
@@ -56,17 +87,7 @@ pub async fn start(
         .await
         .unwrap();
     for id in &old {
-        let _ = tokio::fs::remove_dir_all(s.upload_dir(id)).await;
-        sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
-            .bind(id)
-            .execute(&s.pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM uploads WHERE id = ?")
-            .bind(id)
-            .execute(&s.pool)
-            .await
-            .unwrap();
+        discard_upload(&s, id).await;
     }
     // check 507: spazio libero sul disco dati
     let free = fs4::available_space(&*s.data_dir).unwrap_or(u64::MAX);
@@ -111,15 +132,10 @@ pub async fn chunk(
     let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await else {
         return err(StatusCode::NOT_FOUND, "upload sconosciuto");
     };
-    if n < 0 || n as i64 >= up.1 {
+    if n < 0 || n as i64 >= up.total_chunks {
         return err(StatusCode::BAD_REQUEST, "chunk fuori intervallo");
     }
-    // atteso: chunk_size; l'ultimo è size - (total-1)*chunk_size
-    let expected: i64 = if n as i64 + 1 == up.1 {
-        up.2 - (up.1 - 1) * up.0
-    } else {
-        up.0
-    };
+    let expected: i64 = up.expected_len(n as i64);
     let mut f = match tokio::fs::OpenOptions::new()
         .write(true)
         .open(s.upload_dir(&id).join("data"))
@@ -128,7 +144,7 @@ pub async fn chunk(
         Ok(f) => f,
         Err(_) => return err(StatusCode::NOT_FOUND, "upload scomparso"),
     };
-    f.seek(std::io::SeekFrom::Start(n as u64 * up.0 as u64))
+    f.seek(std::io::SeekFrom::Start(n as u64 * up.chunk_size as u64))
         .await
         .unwrap();
     let mut stream = body.into_data_stream();
@@ -207,7 +223,7 @@ pub async fn finish(
             .fetch_one(&s.pool)
             .await
             .unwrap();
-    if got != up.1 || sum != up.2 {
+    if got != up.total_chunks || sum != up.size {
         return err(StatusCode::CONFLICT, "upload incompleto");
     }
     let src = s.upload_dir(&id).join("data");
@@ -218,17 +234,17 @@ pub async fn finish(
         Ok(m) => m.len(),
         Err(_) => return err(StatusCode::CONFLICT, "tmp mancante"),
     };
-    if meta_len != up.2 as u64 {
+    if meta_len != up.size as u64 {
         return err(StatusCode::CONFLICT, "size finale disallineata");
     }
     // sync_all prima del rename: i dati sono a bordo
-    if up.2 > 0 {
+    if up.size > 0 {
         let f = tokio::fs::File::open(&src).await.unwrap();
         f.sync_all().await.unwrap();
     }
     // INSERT PRIMA del rename: il UNIQUE(user_id, folder_key, name) decide qui
     // il 409 e nessun blob resta in storage/ senza riga
-    let mime = auth::mime_of(&up.3);
+    let mime = auth::mime_of(&up.name);
     let fid = uuid::Uuid::new_v4().to_string();
     if let Err(e) = sqlx::query(
         "INSERT INTO files (id,user_id,folder_id,name,size,mime,stored_name,created_at)
@@ -249,17 +265,7 @@ pub async fn finish(
             .unwrap_or(false)
         {
             // nome già in uso nella stessa cartella: upload morto, pulizia completa
-            sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
-                .bind(&id)
-                .execute(&s.pool)
-                .await
-                .ok();
-            sqlx::query("DELETE FROM uploads WHERE id = ?")
-                .bind(&id)
-                .execute(&s.pool)
-                .await
-                .ok();
-            let _ = tokio::fs::remove_dir_all(s.upload_dir(&id)).await;
+            discard_upload(&s, &id).await;
             return err(StatusCode::CONFLICT, "nome già in uso");
         }
         return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
@@ -276,17 +282,7 @@ pub async fn finish(
             .ok();
         return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
     }
-    sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
-        .bind(&id)
-        .execute(&s.pool)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM uploads WHERE id = ?")
-        .bind(&id)
-        .execute(&s.pool)
-        .await
-        .unwrap();
-    tokio::fs::remove_dir(s.upload_dir(&id)).await.unwrap();
+    discard_upload(&s, &id).await;
     Json(serde_json::json!({"id": fid})).into_response()
 }
 
@@ -298,16 +294,6 @@ pub async fn cancel(
     if uploads_row(&s.pool, &id, &user.user_id).await.is_none() {
         return err(StatusCode::NOT_FOUND, "upload sconosciuto");
     }
-    sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
-        .bind(&id)
-        .execute(&s.pool)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM uploads WHERE id = ?")
-        .bind(&id)
-        .execute(&s.pool)
-        .await
-        .unwrap();
-    let _ = tokio::fs::remove_dir_all(s.upload_dir(&id)).await;
+    discard_upload(&s, &id).await;
     StatusCode::OK.into_response()
 }

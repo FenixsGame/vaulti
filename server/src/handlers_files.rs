@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
@@ -54,6 +54,21 @@ pub struct FilePatch {
     pub folder_id: Option<String>,
 }
 
+#[derive(Serialize)]
+struct FolderRow {
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize)]
+struct FileRow {
+    id: String,
+    name: String,
+    size: i64,
+    mime: String,
+    created_at: i64,
+}
+
 pub async fn list(
     State(s): State<AppState>,
     user: SessionUser,
@@ -65,7 +80,7 @@ pub async fn list(
     {
         return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
     }
-    let folders: Vec<(String, String)> = sqlx::query_as(
+    let folders: Vec<FolderRow> = sqlx::query_as(
         "SELECT id, name FROM folders WHERE user_id = ? AND parent_id IS ? ORDER BY name",
     )
     .bind(&user.user_id)
@@ -73,7 +88,7 @@ pub async fn list(
     .fetch_all(&s.pool)
     .await
     .unwrap();
-    let files: Vec<(String, String, i64, String, i64)> = sqlx::query_as(
+    let files: Vec<FileRow> = sqlx::query_as(
         "SELECT id, name, size, mime, created_at FROM files
          WHERE user_id = ? AND folder_id IS ? AND deleted_at IS NULL ORDER BY name",
     )
@@ -90,18 +105,6 @@ pub async fn list(
     .await
     .unwrap();
     let free = fs4::available_space(&*s.data_dir).unwrap_or(u64::MAX);
-    let folders: Vec<serde_json::Value> = folders
-        .into_iter()
-        .map(|(id, name)| serde_json::json!({"id": id, "name": name}))
-        .collect();
-    let files: Vec<serde_json::Value> = files
-        .into_iter()
-        .map(|(id, name, size, mime, created)| {
-            serde_json::json!({
-                "id": id, "name": name, "size": size, "mime": mime, "created_at": created
-            })
-        })
-        .collect();
     Json(serde_json::json!({
         "folders": folders,
         "files": files,
