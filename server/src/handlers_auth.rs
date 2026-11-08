@@ -79,6 +79,15 @@ pub async fn register(State(s): State<AppState>, Json(c): Json<Creds>) -> Respon
     if c.password.len() < 8 {
         return err(StatusCode::BAD_REQUEST, "password minima 8 caratteri");
     }
+    // check a costo zero PRIMA dell'hash Argon2: dopo il primo utente, una richiesta
+    // anonima non deve bruciare un hash (lento) per un 403; il limiter sta solo su login
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    if users > 0 {
+        return err(StatusCode::FORBIDDEN, "registrazione chiusa");
+    }
     let phc = auth::hash(c.password.clone()).await;
     let id = uuid::Uuid::new_v4().to_string();
     let r = sqlx::query(

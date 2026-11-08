@@ -1969,7 +1969,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tokio-util",
  "tower",
  "tower-http",
  "uuid",

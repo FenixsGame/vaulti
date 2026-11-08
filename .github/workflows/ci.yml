@@ -71,7 +71,9 @@ jobs:
         run: |
           $v = $env:GITHUB_REF_NAME -replace '^desktop-v',''
           $p = 'desktop/src-tauri/tauri.conf.json'
-          (Get-Content $p -Raw).Replace('"version": "0.1.0"', ('"version": ' + '"' + $v + '"')) | Set-Content $p -NoNewline
+          $t = (Get-Content $p -Raw).Replace('"version": "0.1.0"', ('"version": ' + '"' + $v + '"'))
+          if ($t -notlike ('*"version": "' + $v + '"*')) { throw "versione non riscritta in $p: sorgente 0.1.0 non trovata" }
+          $t | Set-Content $p -NoNewline
       - run: cargo tauri build --bundles nsis
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -100,7 +102,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, ui]
     runs-on: ubuntu-latest
     permissions: { contents: write }
     steps:
