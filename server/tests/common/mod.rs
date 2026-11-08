@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -156,4 +155,73 @@ pub async fn finish_ok(t: &TestApp, cookie: &str, up: &str) -> String {
         .as_str()
         .unwrap()
         .to_string()
+}
+
+// helper di dominio spostati qui dallo split di integration.rs
+
+pub fn tmp_dir(t: &TestApp) -> String {
+    format!("{}/tmp", t.data_dir.path().display())
+}
+
+pub fn blob_path(t: &TestApp, uid: &str, stored: &str) -> String {
+    format!("{}/storage/{}/{}", t.data_dir.path().display(), uid, stored)
+}
+
+pub async fn finish_status(t: &TestApp, cookie: &str, id: &str) -> StatusCode {
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req(
+            "POST",
+            &format!("/api/upload/{id}/finish"),
+            None,
+            cookie,
+        ))
+        .await
+        .unwrap();
+    res.status()
+}
+
+pub async fn post_folder(
+    t: &TestApp,
+    cookie: &str,
+    name: &str,
+    parent: Option<&str>,
+) -> (String, StatusCode) {
+    let body = match parent {
+        Some(p) => serde_json::json!({"name": name, "parent_id": p}),
+        None => serde_json::json!({"name": name}),
+    };
+    let res = t
+        .app
+        .clone()
+        .oneshot(authed_req("POST", "/api/folders", Some(body), cookie))
+        .await
+        .unwrap();
+    let st = res.status();
+    let id = if st == StatusCode::OK {
+        serde_json::from_slice::<Value>(&to_bytes(res.into_body()).await).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    } else {
+        String::new()
+    };
+    (id, st)
+}
+
+pub async fn make_file(t: &TestApp, cookie: &str) -> String {
+    let id = start_upload(t, cookie, "cinema.mp4", 3).await;
+    put_chunk(t, cookie, &id, 0, b"ab").await;
+    put_chunk(t, cookie, &id, 1, b"c").await;
+    finish_ok(t, cookie, &id).await
+}
+
+pub fn range_req(uri: &str, cookie: &str, range: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("cookie", cookie.to_string())
+        .header("range", range)
+        .body(Body::empty())
+        .unwrap()
 }
