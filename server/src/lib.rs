@@ -9,8 +9,7 @@ pub mod handlers_store;
 mod error;
 
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
-use axum::extract::Request;
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -29,15 +28,22 @@ pub struct AppState {
     pub data_dir: Arc<PathBuf>,
     pub limiter: Arc<crate::auth::RateLimiter>,
     pub chunk_size: u64,
+    pub origin: Option<String>,
 }
 
 impl AppState {
-    pub fn new(pool: SqlitePool, data_dir: PathBuf, chunk_size: u64) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        data_dir: PathBuf,
+        chunk_size: u64,
+        origin: Option<String>,
+    ) -> Self {
         Self {
             pool,
             data_dir: Arc::new(data_dir),
             limiter: Arc::new(crate::auth::RateLimiter::new()),
             chunk_size,
+            origin,
         }
     }
 
@@ -94,14 +100,16 @@ pub fn build_router(state: AppState) -> Router {
             patch(f::patch_folder).delete(f::delete_folder),
         )
         .merge(chunks)
-        .layer(middleware::from_fn(origin_guard))
+        .layer(middleware::from_fn_with_state(state.clone(), origin_guard))
         .with_state(state)
 }
 
-// CSRF: prima regola Sec-Fetch-Site (browser moderni, ammessi same-origin e none);
-// ripiego per chi non lo manda: Origin assente → ok, presente → host deve coincidere
-// con X-Forwarded-Host (proxy fidato) o Host. Da verificare sul gateway con tailscale serve.
-async fn origin_guard(req: Request, next: Next) -> Response {
+// CSRF: 1) se c'è Sec-Fetch-Site (browser moderni) decide lui: same-origin|none ok,
+// altro → 403. 2) solo Origin: deve coincidere con VAULTI_ORIGIN se impostata,
+// altrimenti con lo schema+host NOTIFICATO in Host — MAI X-Forwarded-Host
+// (l'attaccante può spedire Origin e XFH uguali; Host no). 3) nessun header:
+// pass-through (curl/CLI/destkop senza Origin), comportamento documentato.
+async fn origin_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
     if !matches!(
         *req.method(),
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
@@ -114,17 +122,22 @@ async fn origin_guard(req: Request, next: Next) -> Response {
             return origin_bad();
         }
     } else if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
-        let host = headers
-            .get("x-forwarded-host")
-            .or_else(|| headers.get("host"))
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .trim_end_matches('/');
-        let origin_host = origin
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .trim_end_matches('/');
-        if host != origin_host {
+        let host_of = |v: &str| {
+            v.trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
+        };
+        let ok = match state.origin.as_deref() {
+            Some(cfg) => origin.trim_end_matches('/') == cfg,
+            None => {
+                let host = headers
+                    .get("host")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                host_of(origin) == host_of(host)
+            }
+        };
+        if !ok {
             return origin_bad();
         }
     }
@@ -148,7 +161,12 @@ pub fn run() {
         let dbp = cfg.data_dir.join("vaulti.db");
         let pool = db::new_pool(dbp.to_str().unwrap()).await.unwrap();
         db::migrate(&pool).await.unwrap();
-        let state = AppState::new(pool, cfg.data_dir.clone(), cfg.chunk_size);
+        let state = AppState::new(
+            pool,
+            cfg.data_dir.clone(),
+            cfg.chunk_size,
+            cfg.origin.clone(),
+        );
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", cfg.port))
             .await
             .unwrap();

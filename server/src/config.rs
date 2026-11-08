@@ -6,6 +6,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub port: u16,
     pub chunk_size: u64,
+    // esquema+host dell'istanza (es. "https://box.ts.net"): fonte unica della
+    // difesa CSRF; vuoto → fallback su Host (mai X-Forwarded-Host, spoofabile)
+    pub origin: Option<String>,
 }
 
 pub fn load() -> Config {
@@ -21,5 +24,6 @@ pub fn load() -> Config {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(8 * 1024 * 1024),
+        origin: env::var("VAULTI_ORIGIN").ok().filter(|s| !s.is_empty()),
     }
 }

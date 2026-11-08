@@ -15,7 +15,24 @@ pub async fn boot() -> TestApp {
     let data_dir = tempfile::tempdir().unwrap();
     let pool = vaulti_server::db::new_pool(":memory:").await.unwrap();
     vaulti_server::db::migrate(&pool).await.unwrap();
-    let state = vaulti_server::AppState::new(pool.clone(), data_dir.path().to_path_buf(), 2);
+    let state = vaulti_server::AppState::new(pool.clone(), data_dir.path().to_path_buf(), 2, None);
+    TestApp {
+        app: vaulti_server::build_router(state),
+        pool,
+        data_dir,
+    }
+}
+
+pub async fn boot_origin(origin: &str) -> TestApp {
+    let data_dir = tempfile::tempdir().unwrap();
+    let pool = vaulti_server::db::new_pool(":memory:").await.unwrap();
+    vaulti_server::db::migrate(&pool).await.unwrap();
+    let state = vaulti_server::AppState::new(
+        pool.clone(),
+        data_dir.path().to_path_buf(),
+        2,
+        Some(origin.to_string()),
+    );
     TestApp {
         app: vaulti_server::build_router(state),
         pool,
