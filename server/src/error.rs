@@ -22,6 +22,13 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
+// tokio::fs e tokio::io propagated via `?` in handler: disco pieno/rotto → 500
+impl From<std::io::Error> for AppError {
+    fn from(_: std::io::Error) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "errore interno")
+    }
+}
+
 // UNIQUE → 409 col messaggio di dominio; qualsiasi altro errore SQL → 500
 pub fn unique_conflict(e: sqlx::Error, msg: &'static str) -> AppError {
     if e.as_database_error()

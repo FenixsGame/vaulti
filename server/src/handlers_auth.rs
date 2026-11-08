@@ -151,8 +151,8 @@ pub async fn login(
     Ok((
         [(axum::http::header::SET_COOKIE, auth::cookie_for(&token))],
         Json(serde_json::json!({"ok": true})),
-    ))
-    .into_response()
+    )
+        .into_response())
 }
 
 pub async fn logout(State(s): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {

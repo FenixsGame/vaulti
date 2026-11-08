@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 
 use crate::error::{AppError, unique_conflict};
-use crate::{AppState, handlers_auth::SessionUser};
+use crate::{AppState, auth, handlers_auth::SessionUser};
 
 /// true se la riga esiste e appartiene all'utente
 async fn owns(
@@ -96,12 +96,12 @@ pub async fn list(
     .fetch_one(&s.pool)
     .await?;
     let free = fs4::available_space(&*s.data_dir).unwrap_or(u64::MAX);
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "folders": folders,
         "files": files,
         "quota": {"used": used, "free": free},
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn create_folder(
