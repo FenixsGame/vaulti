@@ -122,11 +122,12 @@ async fn origin_guard(State(state): State<AppState>, req: Request, next: Next) -
             return origin_bad();
         }
     } else if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
-        let host_of = |v: &str| {
+        // fn, non closure: la lifetime in uscita non si esprime nei closure
+        fn host_of(v: &str) -> &str {
             v.trim_start_matches("http://")
                 .trim_start_matches("https://")
                 .trim_end_matches('/')
-        };
+        }
         let ok = match state.origin.as_deref() {
             Some(cfg) => origin.trim_end_matches('/') == cfg,
             None => {
