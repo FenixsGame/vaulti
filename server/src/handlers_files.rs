@@ -54,13 +54,13 @@ pub struct FilePatch {
     pub folder_id: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, sqlx::FromRow)]
 struct FolderRow {
     id: String,
     name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, sqlx::FromRow)]
 struct FileRow {
     id: String,
     name: String,
