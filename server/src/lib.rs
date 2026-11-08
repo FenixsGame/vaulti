@@ -6,6 +6,8 @@ pub mod handlers_files;
 pub mod handlers_static;
 pub mod handlers_store;
 
+mod error;
+
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::Request;

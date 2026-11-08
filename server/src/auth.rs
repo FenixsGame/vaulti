@@ -77,6 +77,14 @@ impl RateLimiter {
 
 pub const COOKIE_MAX_AGE: i64 = 30 * 24 * 3600;
 
+// epoch-seconds: una definizione sola (prima era copy-paste nei tre handler)
+pub fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
 pub fn new_token() -> String {
     let b: [u8; 32] = rand::random();
     b.iter().map(|x| format!("{x:02x}")).collect()

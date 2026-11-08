@@ -6,29 +6,23 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 
+use crate::error::{AppError, unique_conflict};
 use crate::{AppState, handlers_auth::SessionUser};
 
-fn err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(serde_json::json!({"error": msg}))).into_response()
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
-
-/// owner-check generico: Some(id) se la riga esiste e appartiene all'utente
-async fn owns(pool: &sqlx::SqlitePool, user_id: &str, table: &str, id: &str) -> bool {
+/// true se la riga esiste e appartiene all'utente
+async fn owns(
+    pool: &sqlx::SqlitePool,
+    user_id: &str,
+    table: &str,
+    id: &str,
+) -> Result<bool, AppError> {
     let q = format!("SELECT 1 FROM {table} WHERE id = ? AND user_id = ? LIMIT 1");
     let r: Option<i64> = sqlx::query_scalar(&q)
         .bind(id)
         .bind(user_id)
         .fetch_optional(pool)
-        .await
-        .unwrap();
-    r.is_some()
+        .await?;
+    Ok(r.is_some())
 }
 
 #[derive(Deserialize)]
@@ -73,12 +67,12 @@ pub async fn list(
     State(s): State<AppState>,
     user: SessionUser,
     Query(q): Query<ListReq>,
-) -> Response {
+) -> Result<Response, AppError> {
     // cartella richiesta: owner check prima di qualsiasi lettura (404 se non tuo)
     if let Some(fid) = &q.folder_id
-        && !owns(&s.pool, &user.user_id, "folders", fid).await
+        && !owns(&s.pool, &user.user_id, "folders", fid).await?
     {
-        return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
+        return Err(AppError::new(StatusCode::NOT_FOUND, "cartella sconosciuta"));
     }
     let folders: Vec<FolderRow> = sqlx::query_as(
         "SELECT id, name FROM folders WHERE user_id = ? AND parent_id IS ? ORDER BY name",
@@ -86,8 +80,7 @@ pub async fn list(
     .bind(&user.user_id)
     .bind(q.folder_id.as_deref())
     .fetch_all(&s.pool)
-    .await
-    .unwrap();
+    .await?;
     let files: Vec<FileRow> = sqlx::query_as(
         "SELECT id, name, size, mime, created_at FROM files
          WHERE user_id = ? AND folder_id IS ? AND deleted_at IS NULL ORDER BY name",
@@ -95,15 +88,13 @@ pub async fn list(
     .bind(&user.user_id)
     .bind(q.folder_id.as_deref())
     .fetch_all(&s.pool)
-    .await
-    .unwrap();
+    .await?;
     let used: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = ? AND deleted_at IS NULL",
     )
     .bind(&user.user_id)
     .fetch_one(&s.pool)
-    .await
-    .unwrap();
+    .await?;
     let free = fs4::available_space(&*s.data_dir).unwrap_or(u64::MAX);
     Json(serde_json::json!({
         "folders": folders,
@@ -117,33 +108,28 @@ pub async fn create_folder(
     State(s): State<AppState>,
     user: SessionUser,
     Json(rb): Json<FolderReq>,
-) -> Response {
+) -> Result<Response, AppError> {
     if let Some(pid) = &rb.parent_id
-        && !owns(&s.pool, &user.user_id, "folders", pid).await
+        && !owns(&s.pool, &user.user_id, "folders", pid).await?
     {
-        return err(StatusCode::NOT_FOUND, "cartella padre sconosciuta");
+        return Err(AppError::new(
+            StatusCode::NOT_FOUND,
+            "cartella padre sconosciuta",
+        ));
     }
     let id = uuid::Uuid::new_v4().to_string();
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         "INSERT INTO folders (id, user_id, parent_id, name, created_at) VALUES (?,?,?,?,?)",
     )
     .bind(&id)
     .bind(&user.user_id)
     .bind(rb.parent_id.as_deref())
     .bind(&rb.name)
-    .bind(now())
+    .bind(auth::now())
     .execute(&s.pool)
     .await
-    {
-        if e.as_database_error()
-            .map(|d| d.is_unique_violation())
-            .unwrap_or(false)
-        {
-            return err(StatusCode::CONFLICT, "nome già in uso");
-        }
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
-    }
-    Json(serde_json::json!({"id": id})).into_response()
+    .map_err(|e| unique_conflict(e, "nome già in uso"))?;
+    Ok(Json(serde_json::json!({"id": id})).into_response())
 }
 
 pub async fn patch_folder(
@@ -151,35 +137,40 @@ pub async fn patch_folder(
     user: SessionUser,
     Path(id): Path<String>,
     Json(pb): Json<FolderPatch>,
-) -> Response {
-    if !owns(&s.pool, &user.user_id, "folders", &id).await {
-        return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
+) -> Result<Response, AppError> {
+    if !owns(&s.pool, &user.user_id, "folders", &id).await? {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "cartella sconosciuta"));
     }
     if let Some(pid) = &pb.parent_id
         && !pid.is_empty()
     {
-        if !owns(&s.pool, &user.user_id, "folders", pid).await {
-            return err(StatusCode::NOT_FOUND, "cartella padre sconosciuta");
+        if !owns(&s.pool, &user.user_id, "folders", pid).await? {
+            return Err(AppError::new(
+                StatusCode::NOT_FOUND,
+                "cartella padre sconosciuta",
+            ));
         }
         // anti-ciclo: risale i parent del nuovo padre; se tocca la cartella stessa → 400
         let mut cur = pid.clone();
         loop {
             if cur == id {
-                return err(StatusCode::BAD_REQUEST, "spostamento a catena vietato");
+                return Err(AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    "spostamento a catena vietato",
+                ));
             }
             let nxt: Option<Option<String>> =
                 sqlx::query_scalar("SELECT parent_id FROM folders WHERE id = ?")
                     .bind(&cur)
                     .fetch_optional(&s.pool)
-                    .await
-                    .unwrap();
+                    .await?;
             match nxt {
                 Some(Some(c)) => cur = c,
                 _ => break,
             }
         }
     }
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         "UPDATE folders SET name = COALESCE(?1, name),
          parent_id = CASE WHEN ?2 IS NULL THEN parent_id WHEN ?2 = '' THEN NULL ELSE ?2 END
          WHERE id = ?3 AND user_id = ?4",
@@ -190,47 +181,36 @@ pub async fn patch_folder(
     .bind(&user.user_id)
     .execute(&s.pool)
     .await
-    {
-        if e.as_database_error()
-            .map(|d| d.is_unique_violation())
-            .unwrap_or(false)
-        {
-            return err(StatusCode::CONFLICT, "nome già in uso");
-        }
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
-    }
-    Json(serde_json::json!({"ok": true})).into_response()
+    .map_err(|e| unique_conflict(e, "nome già in uso"))?;
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 pub async fn delete_folder(
     State(s): State<AppState>,
     user: SessionUser,
     Path(id): Path<String>,
-) -> Response {
-    if !owns(&s.pool, &user.user_id, "folders", &id).await {
-        return err(StatusCode::NOT_FOUND, "cartella sconosciuta");
+) -> Result<Response, AppError> {
+    if !owns(&s.pool, &user.user_id, "folders", &id).await? {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "cartella sconosciuta"));
     }
     let folders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM folders WHERE parent_id = ?")
         .bind(&id)
         .fetch_one(&s.pool)
-        .await
-        .unwrap();
+        .await?;
     let files: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE folder_id = ? AND deleted_at IS NULL")
             .bind(&id)
             .fetch_one(&s.pool)
-            .await
-            .unwrap();
+            .await?;
     if folders > 0 || files > 0 {
-        return err(StatusCode::CONFLICT, "cartella non vuota");
+        return Err(AppError::new(StatusCode::CONFLICT, "cartella non vuota"));
     }
     sqlx::query("DELETE FROM folders WHERE id = ? AND user_id = ?")
         .bind(&id)
         .bind(&user.user_id)
         .execute(&s.pool)
-        .await
-        .unwrap();
-    Json(serde_json::json!({"ok": true})).into_response()
+        .await?;
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 pub async fn patch_file(
@@ -238,20 +218,20 @@ pub async fn patch_file(
     user: SessionUser,
     Path(id): Path<String>,
     Json(pb): Json<FilePatch>,
-) -> Response {
-    if !owns(&s.pool, &user.user_id, "files", &id).await {
-        return err(StatusCode::NOT_FOUND, "file sconosciuto");
+) -> Result<Response, AppError> {
+    if !owns(&s.pool, &user.user_id, "files", &id).await? {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "file sconosciuto"));
     }
     if let Some(fid) = &pb.folder_id
         && !fid.is_empty()
-        && !owns(&s.pool, &user.user_id, "folders", fid).await
+        && !owns(&s.pool, &user.user_id, "folders", fid).await?
     {
-        return err(
+        return Err(AppError::new(
             StatusCode::NOT_FOUND,
             "cartella di destinazione sconosciuta",
-        );
+        ));
     }
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         "UPDATE files SET name = COALESCE(?1, name),
          folder_id = CASE WHEN ?2 IS NULL THEN folder_id WHEN ?2 = '' THEN NULL ELSE ?2 END
          WHERE id = ?3 AND user_id = ?4",
@@ -262,42 +242,32 @@ pub async fn patch_file(
     .bind(&user.user_id)
     .execute(&s.pool)
     .await
-    {
-        if e.as_database_error()
-            .map(|d| d.is_unique_violation())
-            .unwrap_or(false)
-        {
-            return err(StatusCode::CONFLICT, "nome già in uso");
-        }
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
-    }
-    Json(serde_json::json!({"ok": true})).into_response()
+    .map_err(|e| unique_conflict(e, "nome già in uso"))?;
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 pub async fn delete_file(
     State(s): State<AppState>,
     user: SessionUser,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, AppError> {
     let Some((uid, stored)): Option<(String, String)> = sqlx::query_as(
         "SELECT user_id, stored_name FROM files WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
     )
     .bind(&id)
     .bind(&user.user_id)
     .fetch_optional(&s.pool)
-    .await
-    .unwrap()
+    .await?
     else {
-        return err(StatusCode::NOT_FOUND, "file sconosciuto");
+        return Err(AppError::new(StatusCode::NOT_FOUND, "file sconosciuto"));
     };
     sqlx::query("DELETE FROM files WHERE id = ?")
         .bind(&id)
         .execute(&s.pool)
-        .await
-        .unwrap();
+        .await?;
     // hard delete del blob: se manca già non è un errore
     let _ = tokio::fs::remove_file(s.blob_path(&uid, &stored)).await;
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 pub async fn download(
@@ -305,7 +275,7 @@ pub async fn download(
     user: SessionUser,
     Path(id): Path<String>,
     req: Request,
-) -> Response {
+) -> Result<Response, AppError> {
     let row: Option<(String, String, String)> = sqlx::query_as(
         "SELECT name, mime, stored_name FROM files
          WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
@@ -313,10 +283,9 @@ pub async fn download(
     .bind(&id)
     .bind(&user.user_id)
     .fetch_optional(&s.pool)
-    .await
-    .unwrap();
+    .await?;
     let Some((name, mime, stored)) = row else {
-        return err(StatusCode::NOT_FOUND, "file non trovato");
+        return Err(AppError::new(StatusCode::NOT_FOUND, "file non trovato"));
     };
     // ServeFile gestisce Range/416/accept-ranges sui byte a disco; qui sopra solo
     // l'owner-check: il path è derivato da stored_name di proprietà confermata
@@ -360,5 +329,5 @@ pub async fn download(
     );
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap());
-    resp
+    Ok(resp)
 }

@@ -7,20 +7,10 @@ use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
+use crate::error::AppError;
 use crate::{AppState, auth, handlers_auth::SessionUser};
 
 const WEEK: i64 = 7 * 24 * 3600;
-
-fn err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(serde_json::json!({"error": msg}))).into_response()
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
 
 #[derive(sqlx::FromRow)]
 struct Upload {
@@ -41,31 +31,31 @@ impl Upload {
     }
 }
 
-async fn uploads_row(pool: &sqlx::SqlitePool, upload_id: &str, user_id: &str) -> Option<Upload> {
-    sqlx::query_as::<_, Upload>(
+async fn uploads_row(
+    pool: &sqlx::SqlitePool,
+    upload_id: &str,
+    user_id: &str,
+) -> Result<Option<Upload>, AppError> {
+    Ok(sqlx::query_as::<_, Upload>(
         "SELECT chunk_size, total_chunks, size, name FROM uploads WHERE id = ? AND user_id = ?",
     )
     .bind(upload_id)
     .bind(user_id)
     .fetch_optional(pool)
-    .await
-    .unwrap()
+    .await?)
 }
 
-// pulizia unica di un upload morto: righe in transazione, tmp rimosso a prescindere
+// pulizia best-effort di un upload morto: se le righe restano, lo sweep a 7 giorni
+// ripulisce comunque; tmp rimosso a prescindere
 async fn discard_upload(s: &AppState, id: &str) {
-    let mut tx = s.pool.begin().await.unwrap();
-    sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
+    let _ = sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
         .bind(id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM uploads WHERE id = ?")
+        .execute(&s.pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM uploads WHERE id = ?")
         .bind(id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .execute(&s.pool)
+        .await;
     let _ = tokio::fs::remove_dir_all(s.upload_dir(id)).await;
 }
 
@@ -79,28 +69,30 @@ pub async fn start(
     State(s): State<AppState>,
     user: SessionUser,
     Json(rb): Json<StartReq>,
-) -> Response {
+) -> Result<Response, AppError> {
     // sweep: tmp oltre 7 giorni → directory e righe cancellate
     let old: Vec<String> = sqlx::query_scalar("SELECT id FROM uploads WHERE created_at < ?")
-        .bind(now() - WEEK)
+        .bind(auth::now() - WEEK)
         .fetch_all(&s.pool)
-        .await
-        .unwrap();
+        .await?;
     for id in &old {
         discard_upload(&s, id).await;
     }
     // check 507: spazio libero sul disco dati
     let free = fs4::available_space(&*s.data_dir).unwrap_or(u64::MAX);
     if rb.size > free {
-        return err(StatusCode::INSUFFICIENT_STORAGE, "spazio insufficiente");
+        return Err(AppError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "spazio insufficiente",
+        ));
     }
     let id = uuid::Uuid::new_v4().to_string();
     // ceil intero: size 0 → total 0 (nessun chunk atteso, finish accetta somma 0)
     let total: i64 = rb.size.div_ceil(s.chunk_size) as i64;
     let updir = s.upload_dir(&id);
-    tokio::fs::create_dir_all(&updir).await.unwrap();
-    let f = tokio::fs::File::create(updir.join("data")).await.unwrap();
-    f.set_len(rb.size).await.unwrap();
+    tokio::fs::create_dir_all(&updir).await?;
+    let f = tokio::fs::File::create(updir.join("data")).await?;
+    f.set_len(rb.size).await?;
     sqlx::query(
         "INSERT INTO uploads (id,user_id,name,chunk_size,total_chunks,size,created_at)
          VALUES (?,?,?,?,?,?,?)",
@@ -111,11 +103,10 @@ pub async fn start(
     .bind(s.chunk_size as i64)
     .bind(total)
     .bind(rb.size as i64)
-    .bind(now())
+    .bind(auth::now())
     .execute(&s.pool)
-    .await
-    .unwrap();
-    Json(serde_json::json!({"upload_id": id, "chunk_size": s.chunk_size})).into_response()
+    .await?;
+    Ok(Json(serde_json::json!({"upload_id": id, "chunk_size": s.chunk_size})).into_response())
 }
 
 pub async fn chunk(
@@ -123,17 +114,20 @@ pub async fn chunk(
     user: SessionUser,
     Path((id, n)): Path<(String, i32)>,
     body: axum::body::Body,
-) -> Response {
+) -> Result<Response, AppError> {
     // l'id è un UUID generato dal server: non è mai un percorso
     if uuid::Uuid::parse_str(&id).is_err() {
-        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+        return Err(AppError::new(StatusCode::NOT_FOUND, "upload sconosciuto"));
     }
     // owner verificato PRIMA di toccare il disco
-    let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await else {
-        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+    let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await? else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "upload sconosciuto"));
     };
     if n < 0 || n as i64 >= up.total_chunks {
-        return err(StatusCode::BAD_REQUEST, "chunk fuori intervallo");
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "chunk fuori intervallo",
+        ));
     }
     let expected: i64 = up.expected_len(n as i64);
     let mut f = match tokio::fs::OpenOptions::new()
@@ -142,34 +136,43 @@ pub async fn chunk(
         .await
     {
         Ok(f) => f,
-        Err(_) => return err(StatusCode::NOT_FOUND, "upload scomparso"),
+        Err(_) => {
+            return Err(AppError::new(StatusCode::NOT_FOUND, "upload scomparso"));
+        }
     };
     f.seek(std::io::SeekFrom::Start(n as u64 * up.chunk_size as u64))
-        .await
-        .unwrap();
+        .await?;
     let mut stream = body.into_data_stream();
     let mut written: i64 = 0;
     let mut overflow = false;
     while let Some(piece) = stream.next().await {
         let p = match piece {
             Ok(p) => p,
-            Err(_) => return err(StatusCode::BAD_REQUEST, "body illeggibile"),
+            Err(_) => {
+                return Err(AppError::new(StatusCode::BAD_REQUEST, "body illeggibile"));
+            }
         };
         if written + p.len() as i64 > expected {
             overflow = true;
             break;
         }
-        f.write_all(&p).await.unwrap();
+        f.write_all(&p).await?;
         written += p.len() as i64;
     }
     if overflow {
-        return err(StatusCode::PAYLOAD_TOO_LARGE, "chunk troppo lungo");
+        return Err(AppError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "chunk troppo lungo",
+        ));
     }
     if written != expected {
-        return err(StatusCode::BAD_REQUEST, "chunk incompleto o corto");
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "chunk incompleto o corto",
+        ));
     }
-    f.flush().await.unwrap();
-    f.sync_all().await.unwrap();
+    f.flush().await?;
+    f.sync_all().await?;
     // la riga va inserita SOLO con la verifica esatta: un chunk interrotto
     // non risulta mai ricevuto e il resume lo rinvia (idempotente: OR REPLACE)
     sqlx::query(
@@ -179,68 +182,69 @@ pub async fn chunk(
     .bind(&id)
     .bind(n)
     .bind(written)
-    .bind(now())
+    .bind(auth::now())
     .execute(&s.pool)
-    .await
-    .unwrap();
-    StatusCode::NO_CONTENT.into_response()
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 pub async fn status(
     State(s): State<AppState>,
     user: SessionUser,
     Path(id): Path<String>,
-) -> Response {
-    if uploads_row(&s.pool, &id, &user.user_id).await.is_none() {
-        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+) -> Result<Response, AppError> {
+    if uploads_row(&s.pool, &id, &user.user_id).await?.is_none() {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "upload sconosciuto"));
     }
     let received: Vec<i32> = sqlx::query_scalar(
         "SELECT chunk_n FROM upload_chunks WHERE upload_id = ? ORDER BY chunk_n",
     )
     .bind(&id)
     .fetch_all(&s.pool)
-    .await
-    .unwrap();
-    Json(serde_json::json!({"received": received})).into_response()
+    .await?;
+    Ok(Json(serde_json::json!({"received": received})).into_response())
 }
 
 pub async fn finish(
     State(s): State<AppState>,
     user: SessionUser,
     Path(id): Path<String>,
-) -> Response {
-    let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await else {
-        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+) -> Result<Response, AppError> {
+    let Some(up) = uploads_row(&s.pool, &id, &user.user_id).await? else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "upload sconosciuto"));
     };
     let got: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upload_chunks WHERE upload_id = ?")
         .bind(&id)
         .fetch_one(&s.pool)
-        .await
-        .unwrap();
+        .await?;
     let sum: i64 =
         sqlx::query_scalar("SELECT COALESCE(SUM(len), 0) FROM upload_chunks WHERE upload_id = ?")
             .bind(&id)
             .fetch_one(&s.pool)
-            .await
-            .unwrap();
+            .await?;
     if got != up.total_chunks || sum != up.size {
-        return err(StatusCode::CONFLICT, "upload incompleto");
+        return Err(AppError::new(StatusCode::CONFLICT, "upload incompleto"));
     }
     let src = s.upload_dir(&id).join("data");
     let dst_dir = s.storage_dir(&user.user_id);
-    tokio::fs::create_dir_all(&dst_dir).await.unwrap();
+    tokio::fs::create_dir_all(&dst_dir).await?;
     let stored = uuid::Uuid::new_v4().to_string();
     let meta_len = match tokio::fs::metadata(&src).await {
         Ok(m) => m.len(),
-        Err(_) => return err(StatusCode::CONFLICT, "tmp mancante"),
+        Err(_) => {
+            return Err(AppError::new(StatusCode::CONFLICT, "tmp mancante"));
+        }
     };
     if meta_len != up.size as u64 {
-        return err(StatusCode::CONFLICT, "size finale disallineata");
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "size finale disallineata",
+        ));
     }
     // sync_all prima del rename: i dati sono a bordo
     if up.size > 0 {
-        let f = tokio::fs::File::open(&src).await.unwrap();
-        f.sync_all().await.unwrap();
+        let f = tokio::fs::File::open(&src).await?;
+        f.sync_all().await?;
     }
     // INSERT PRIMA del rename: il UNIQUE(user_id, folder_key, name) decide qui
     // il 409 e nessun blob resta in storage/ senza riga
@@ -256,44 +260,45 @@ pub async fn finish(
     .bind(up.size)
     .bind(mime)
     .bind(&stored)
-    .bind(now())
+    .bind(auth::now())
     .execute(&s.pool)
     .await
     {
+        // nome già in uso nella stessa cartella: upload morto, pulizia completa
         if e.as_database_error()
-            .map(|d| d.is_unique_violation())
-            .unwrap_or(false)
+            .is_some_and(|d| d.is_unique_violation())
         {
-            // nome già in uso nella stessa cartella: upload morto, pulizia completa
             discard_upload(&s, &id).await;
-            return err(StatusCode::CONFLICT, "nome già in uso");
+            return Err(AppError::new(StatusCode::CONFLICT, "nome già in uso"));
         }
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
+        return Err(e.into());
     }
     // il rename adesso: se fallisce, la riga appena inserta non deve restare
     if tokio::fs::rename(&src, s.blob_path(&user.user_id, &stored))
         .await
         .is_err()
     {
-        sqlx::query("DELETE FROM files WHERE id = ?")
+        let _ = sqlx::query("DELETE FROM files WHERE id = ?")
             .bind(&fid)
             .execute(&s.pool)
-            .await
-            .ok();
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
+            .await;
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "errore interno",
+        ));
     }
     discard_upload(&s, &id).await;
-    Json(serde_json::json!({"id": fid})).into_response()
+    Ok(Json(serde_json::json!({"id": fid})).into_response())
 }
 
 pub async fn cancel(
     State(s): State<AppState>,
     user: SessionUser,
     Path(id): Path<String>,
-) -> Response {
-    if uploads_row(&s.pool, &id, &user.user_id).await.is_none() {
-        return err(StatusCode::NOT_FOUND, "upload sconosciuto");
+) -> Result<Response, AppError> {
+    if uploads_row(&s.pool, &id, &user.user_id).await?.is_none() {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "upload sconosciuto"));
     }
     discard_upload(&s, &id).await;
-    StatusCode::OK.into_response()
+    Ok(StatusCode::OK.into_response())
 }
