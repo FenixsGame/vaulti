@@ -49,7 +49,6 @@ pub async fn start(
     user: SessionUser,
     Json(rb): Json<StartReq>,
 ) -> Response {
-    let dir = format!("{}/tmp", s.data_dir);
     // sweep: tmp oltre 7 giorni → directory e righe cancellate
     let old: Vec<String> = sqlx::query_scalar("SELECT id FROM uploads WHERE created_at < ?")
         .bind(now() - WEEK)
@@ -57,7 +56,7 @@ pub async fn start(
         .await
         .unwrap();
     for id in &old {
-        let _ = tokio::fs::remove_dir_all(format!("{dir}/{id}")).await;
+        let _ = tokio::fs::remove_dir_all(s.upload_dir(id)).await;
         sqlx::query("DELETE FROM upload_chunks WHERE upload_id = ?")
             .bind(id)
             .execute(&s.pool)
@@ -77,11 +76,9 @@ pub async fn start(
     let id = uuid::Uuid::new_v4().to_string();
     // ceil intero: size 0 → total 0 (nessun chunk atteso, finish accetta somma 0)
     let total: i64 = rb.size.div_ceil(s.chunk_size) as i64;
-    let updir = format!("{dir}/{id}");
+    let updir = s.upload_dir(&id);
     tokio::fs::create_dir_all(&updir).await.unwrap();
-    let f = tokio::fs::File::create(format!("{updir}/data"))
-        .await
-        .unwrap();
+    let f = tokio::fs::File::create(updir.join("data")).await.unwrap();
     f.set_len(rb.size).await.unwrap();
     sqlx::query(
         "INSERT INTO uploads (id,user_id,name,chunk_size,total_chunks,size,created_at)
@@ -125,7 +122,7 @@ pub async fn chunk(
     };
     let mut f = match tokio::fs::OpenOptions::new()
         .write(true)
-        .open(format!("{}/tmp/{}/data", s.data_dir, id))
+        .open(s.upload_dir(&id).join("data"))
         .await
     {
         Ok(f) => f,
@@ -213,8 +210,8 @@ pub async fn finish(
     if got != up.1 || sum != up.2 {
         return err(StatusCode::CONFLICT, "upload incompleto");
     }
-    let src = format!("{}/tmp/{}/data", s.data_dir, id);
-    let dst_dir = format!("{}/storage/{}", s.data_dir, user.user_id);
+    let src = s.upload_dir(&id).join("data");
+    let dst_dir = s.storage_dir(&user.user_id);
     tokio::fs::create_dir_all(&dst_dir).await.unwrap();
     let stored = uuid::Uuid::new_v4().to_string();
     let meta_len = match tokio::fs::metadata(&src).await {
@@ -262,13 +259,13 @@ pub async fn finish(
                 .execute(&s.pool)
                 .await
                 .ok();
-            let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir)).await;
+            let _ = tokio::fs::remove_dir_all(s.upload_dir(&id)).await;
             return err(StatusCode::CONFLICT, "nome già in uso");
         }
         return err(StatusCode::INTERNAL_SERVER_ERROR, "errore interno");
     }
     // il rename adesso: se fallisce, la riga appena inserta non deve restare
-    if tokio::fs::rename(&src, format!("{dst_dir}/{stored}"))
+    if tokio::fs::rename(&src, s.blob_path(&user.user_id, &stored))
         .await
         .is_err()
     {
@@ -289,9 +286,7 @@ pub async fn finish(
         .execute(&s.pool)
         .await
         .unwrap();
-    tokio::fs::remove_dir(format!("{}/tmp/{id}", s.data_dir))
-        .await
-        .unwrap();
+    tokio::fs::remove_dir(s.upload_dir(&id)).await.unwrap();
     Json(serde_json::json!({"id": fid})).into_response()
 }
 
@@ -313,6 +308,6 @@ pub async fn cancel(
         .execute(&s.pool)
         .await
         .unwrap();
-    let _ = tokio::fs::remove_dir_all(format!("{}/tmp/{id}", s.data_dir)).await;
+    let _ = tokio::fs::remove_dir_all(s.upload_dir(&id)).await;
     StatusCode::OK.into_response()
 }

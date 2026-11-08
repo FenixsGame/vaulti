@@ -293,7 +293,7 @@ pub async fn delete_file(
         .await
         .unwrap();
     // hard delete del blob: se manca già non è un errore
-    let _ = tokio::fs::remove_file(format!("{}/storage/{}/{}", s.data_dir, uid, stored)).await;
+    let _ = tokio::fs::remove_file(s.blob_path(&uid, &stored)).await;
     Json(serde_json::json!({"ok": true})).into_response()
 }
 
@@ -317,10 +317,7 @@ pub async fn download(
     };
     // ServeFile gestisce Range/416/accept-ranges sui byte a disco; qui sopra solo
     // l'owner-check: il path è derivato da stored_name di proprietà confermata
-    let svc = tower_http::services::ServeFile::new(format!(
-        "{}/storage/{}/{}",
-        s.data_dir, user.user_id, stored
-    ));
+    let svc = tower_http::services::ServeFile::new(s.blob_path(&user.user_id, &stored));
     let mut resp = svc.oneshot(req).await.unwrap().map(axum::body::Body::new);
     // ascii: fallback sicuro per browser senza RFC 5987; controlli e `"` sostituiti
     // (HeaderValue::from_str li rifiuterebbe); alfabetici/spazi restano

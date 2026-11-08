@@ -18,24 +18,41 @@ use axum::routing::patch;
 use axum::routing::post;
 use axum::routing::put;
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
-    pub data_dir: Arc<String>,
+    pub data_dir: Arc<PathBuf>,
     pub limiter: Arc<crate::auth::RateLimiter>,
     pub chunk_size: u64,
 }
 
 impl AppState {
-    pub fn new(pool: SqlitePool, data_dir: String, chunk_size: u64) -> Self {
+    pub fn new(pool: SqlitePool, data_dir: PathBuf, chunk_size: u64) -> Self {
         Self {
             pool,
             data_dir: Arc::new(data_dir),
             limiter: Arc::new(crate::auth::RateLimiter::new()),
             chunk_size,
         }
+    }
+
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.data_dir.join("tmp")
+    }
+
+    pub fn upload_dir(&self, id: &str) -> PathBuf {
+        self.data_dir.join("tmp").join(id)
+    }
+
+    pub fn storage_dir(&self, uid: &str) -> PathBuf {
+        self.data_dir.join("storage").join(uid)
+    }
+
+    pub fn blob_path(&self, uid: &str, stored: &str) -> PathBuf {
+        self.storage_dir(uid).join(stored)
     }
 }
 
@@ -124,11 +141,10 @@ pub fn run() {
     let cfg = config::load();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async move {
-        std::fs::create_dir_all(format!("{}/storage", cfg.data_dir)).unwrap();
-        std::fs::create_dir_all(format!("{}/tmp", cfg.data_dir)).unwrap();
-        let pool = db::new_pool(&format!("{}/vaulti.db", cfg.data_dir))
-            .await
-            .unwrap();
+        std::fs::create_dir_all(cfg.data_dir.join("storage")).unwrap();
+        std::fs::create_dir_all(cfg.data_dir.join("tmp")).unwrap();
+        let dbp = cfg.data_dir.join("vaulti.db");
+        let pool = db::new_pool(dbp.to_str().unwrap()).await.unwrap();
         db::migrate(&pool).await.unwrap();
         let state = AppState::new(pool, cfg.data_dir.clone(), cfg.chunk_size);
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", cfg.port))
@@ -150,9 +166,8 @@ pub fn reset_password() {
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async move {
-        let pool = db::new_pool(&format!("{}/vaulti.db", cfg.data_dir))
-            .await
-            .unwrap();
+        let dbp = cfg.data_dir.join("vaulti.db");
+        let pool = db::new_pool(dbp.to_str().unwrap()).await.unwrap();
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
             eprintln!("password assente: serve una riga su stdin");
